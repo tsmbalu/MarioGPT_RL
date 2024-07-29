@@ -69,6 +69,10 @@ def train(dataset_path):
     df = pd.read_csv(dataset_path)
     prompts = df.iloc[:, 0].astype(str).tolist()
     levels = df.iloc[:, 4].astype(str).tolist()
-    scores = df.iloc[:, 5:8].to_numpy()
+    scores = df.iloc[:, 5:9].to_numpy()
 
     reward_trainer(prompts, levels, scores)
+
+
+if __name__ == "__main__":
+    train("../sampling/sampling_new.csv")

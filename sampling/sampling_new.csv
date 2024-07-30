@@ -1,3 +1,4 @@
+prompt, steps, temperature, timestamp, generate_level_file_path,shannon_entropy,playability,difficulty,aesthetic
 no pipes no enemies little blocks low elevation,1400,2.5,1720435400619,../sampling/generated_level/generated_level_1720435400619_0.txt,3.9045028179651577,1,93.351485,10
 no pipes no enemies little blocks low elevation,1400,2.5,1720435508096,../sampling/generated_level/generated_level_1720435508096_1.txt,1.2488101682129369,1,64.78092000000001,10
 no pipes no enemies little blocks low elevation,1400,2.5,1720435615370,../sampling/generated_level/generated_level_1720435615370_2.txt,2.5327174691301484,1,75.445365,10

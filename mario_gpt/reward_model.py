@@ -4,7 +4,8 @@ from sklearn.model_selection import train_test_split
 
 import tensorflow as tf
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Dense, Concatenate, Flatten, Embedding, Dropout, Conv1D, MaxPooling1D
+from tensorflow.keras.layers import Input, Dense, Concatenate, Flatten, Embedding, Dropout, Conv1D, MaxPooling1D,\
+    GlobalAveragePooling1D
 
 
 def define_model(max_length, vocab_size):
@@ -13,14 +14,16 @@ def define_model(max_length, vocab_size):
     embedding1 = Embedding(vocab_size, 100)(inputs1)
     dense1 = Dense(32, activation='relu')(embedding1)
     drop1 = Dropout(0.5)(dense1)
-    pool1 = MaxPooling1D(pool_size=2)(drop1)
+    # pool1 = MaxPooling1D(pool_size=2)(drop1)
+    pool1 = GlobalAveragePooling1D()(drop1)
     flat1 = Flatten()(pool1)
     # channel 2
     inputs2 = Input(shape=(max_length,))
     embedding2 = Embedding(vocab_size, 100)(inputs2)
     dense2 = Dense(32, activation='relu')(embedding2)
     drop2 = Dropout(0.5)(dense2)
-    pool2 = MaxPooling1D(pool_size=2)(drop2)
+    # pool2 = MaxPooling1D(pool_size=2)(drop2)
+    pool2 = GlobalAveragePooling1D()(drop2)
     flat2 = Flatten()(pool2)
     # merge
     merged = Concatenate()([flat1, flat2])
@@ -98,8 +101,6 @@ def reward_trainer(train_prompts: list, train_levels: list, train_score: np.arra
 
     with tf.device(device):
         model = define_model(max_length, 10000)
-        # input_data - shape - 1658, 200
-        # output_data - shape - 1658, 4
         model.fit(train_input, train_score, epochs=20, batch_size=32, validation_data=(test_input, test_score))
 
     model.save('mariogpt_reward_model.h5')
@@ -124,4 +125,4 @@ def trainer(dataset_path):
 
 
 if __name__ == "__main__":
-    trainer("../sampling/sampling_new.csv")
+    trainer("../sampling/sampling_score.csv")

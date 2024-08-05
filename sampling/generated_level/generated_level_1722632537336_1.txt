@@ -1,0 +1,14 @@
+------------------------------------------------------------------xxxxxx----------------------------
+--------------------------------------------------------------xxxxx----xxxxxxxxxxxxxxxxxxxxxxxxx----
+----------------SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS------xx--x-------SSSSSSSSSSSSSSSSSSSSSSS----
+----------------[]------SSSSSSSSSSSSSSSSSSSSSS------------o--x---X--------------------------[]------
+----------------[]------SSSSSSSSSSSSSSSSSSSSSS-----------XXX-x------------------------------[]------
+----------------[]------SSSSSSSSSSSSSSSSSSSSSS--QQ------xxxx-x------------------------------[]------
+----xxxx-----------------------------------------------xx---xx--------X---------------------[]------
+---xx---x----------------------xxx-----------xxx-xxx--xx-----x------------------------------<>------
+--xx-----x--------------xxxxxxxx?-xxxxxxxxxxxx--xx--xxx------S------------------------------------X-
+xxx-------x------------xx-SSSSSS??SSSSSSSSSSSS--QQ--QQQ------------------------------<>-----------XS
+-x---------x----------xx--SSSSS---SSSSSSSSSSSS---------------------------------------[]----S-S-S----
+<>---------------xxx-xx---SSSSS---SSSSSSSSSSSS---------------X---X-------ooooooooo---[]----S-S-S----
+[]o--------Xxxxxxx--xx---------oooSSSSSSSSSSSS---------------------------ooooooooo---[]----S-S-Sxxxx
+XXXXXXX----XXXXXXX--XX---XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX------------------XXXXXXXXX---[]----S-S-SXXXX

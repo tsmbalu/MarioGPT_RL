@@ -5,14 +5,15 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import numpy as np
 import pandas as pd
+import torch
 
-from mario_gpt import SampleOutput
+from mario_gpt import MarioLM, SampleOutput
 
 PRETRAINED_MODEL_PATH = "shyamsn97/Mario-GPT2-700-context-length"
 
 
 class PreferenceModel(keras.Model):
-    def __init__(self, input_dim=512, output_dim=3):
+    def __init__(self, input_dim=2168, output_dim=3):
         super(PreferenceModel, self).__init__()
         self.dense1 = tf.keras.layers.Dense(input_dim, activation='relu')
         self.dense2 = tf.keras.layers.Dense(output_dim, activation='linear')  # Use linear activation for regression
@@ -45,7 +46,9 @@ class PreferenceModel(keras.Model):
 
             # Training loop
             train_loss = 0
-            for step, data in enumerate(train_dataset):
+            inputs, scores = train_dataset
+            for input, score in zip(inputs, scores):
+                data = (input, score)
                 logs = self.train_step(data)
                 train_loss += logs['loss'].numpy()
 
@@ -53,7 +56,9 @@ class PreferenceModel(keras.Model):
             val_loss = 0
             all_predictions = []
             all_true_scores = []
-            for data in val_dataset:
+            inputs, scores = val_dataset
+            for (input, score) in zip(inputs, scores):
+                data = (input, score)
                 logs = self.test_step(data)
                 val_loss += logs['loss'].numpy()
                 all_predictions.extend(logs['predictions'].numpy().flatten())
@@ -79,6 +84,30 @@ def extract_level_text(levels: list):
     return level_list
 
 
+def convert_to_level_token(levels: list):
+    level_list = []
+    for lvl in levels:
+        generated_level = SampleOutput.load(lvl)
+        lst = generated_level.level
+        if not lst:
+            return ""
+
+        # Initialize the result string
+        result = ""
+
+        list_length = len(lst) - 1
+        # Get the length of the elements
+        element_length = len(lst[0])
+        # Iterate over the length of the elements
+        for i in range(element_length):
+            for j in range(list_length, -1, -1):
+                result += lst[j][i]
+
+        level_list.append(result)
+
+    return level_list
+
+
 def split_into_chunks(text, max_length):
     words = text.split()
     return [' '.join(words[i:i + max_length]) for i in range(0, len(words), max_length)]
@@ -91,18 +120,19 @@ def prepare_dataset(df):
     print('Test Shape:', test_df.shape)
     train_prompts = train_df['prompt'].astype(str).tolist()
     train_levels = train_df['level_file_path'].astype(str).tolist()
-    train_levels_txt = extract_level_text(train_levels)
+    train_levels_token = convert_to_level_token(train_levels)
     train_scores = train_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']].to_numpy()
     val_prompts = test_df['prompt'].astype(str).tolist()
     val_levels = test_df['level_file_path'].astype(str).tolist()
-    val_levels_txt = extract_level_text(val_levels)
+    val_levels_token = convert_to_level_token(val_levels)
     val_scores = test_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']].to_numpy()
 
+    '''
     # Concatenate the prompt and response
     train_input_texts = [f"{prompt} {response}" for prompt, response in zip(train_prompts, train_levels_txt)]
     val_input_texts = [f"{prompt} {response}" for prompt, response in zip(val_prompts, val_levels_txt)]
 
-    tokenizer = AutoTokenizer.from_pretrained(PRETRAINED_MODEL_PATH)
+    
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
@@ -128,6 +158,25 @@ def prepare_dataset(df):
 
     train_dataset = tf.data.Dataset.from_tensor_slices((train_input_ids, train_scores_tf)).batch(2)
     val_dataset = tf.data.Dataset.from_tensor_slices((val_input_ids, val_scores_tf)).batch(2)
+    '''
+    mario_lm = MarioLM()
+    tokenized_train_prompts = [mario_lm.prompter.output_hidden(prompt) for prompt in zip(train_prompts)]
+    tokenized_val_prompts = [mario_lm.prompter.output_hidden(prompt) for prompt in zip(val_prompts)]
+    tokenized_train_levels = [mario_lm.tokenizer.encode(lvl_token, return_tensors="pt") for lvl_token in
+                             train_levels_token]
+    tokenized_val_levels = [mario_lm.tokenizer.encode(lvl_token, return_tensors="pt") for lvl_token in
+                           val_levels_token]
+
+    train_features_tf = [tf.convert_to_tensor(torch.concat((prompt, level), axis=1).numpy())
+                      for prompt, level in zip(tokenized_train_prompts, tokenized_train_levels)]
+    val_features_tf = [tf.convert_to_tensor(torch.concat((prompt, level), axis=1).numpy())
+                    for prompt, level in zip(tokenized_val_prompts, tokenized_val_levels)]
+
+    train_scores_tf = tf.convert_to_tensor(train_scores)
+    val_scores_tf = tf.convert_to_tensor(val_scores)
+
+    train_dataset = (train_features_tf, train_scores_tf)
+    val_dataset = (val_features_tf, val_scores_tf)
 
     return train_dataset, val_dataset
 
@@ -142,4 +191,4 @@ if __name__ == "__main__":
     preference_model.fit(train_dataset, val_dataset, num_epochs=50)
 
     # Save the trained model
-    preference_model.save_model("preference_model.weights.h5")
+    preference_model.save_model("../preference_model/preference_model.weights.h5")

@@ -162,9 +162,9 @@ def prepare_dataset(df):
     mario_lm = MarioLM()
     tokenized_train_prompts = [mario_lm.prompter.output_hidden(prompt) for prompt in zip(train_prompts)]
     tokenized_val_prompts = [mario_lm.prompter.output_hidden(prompt) for prompt in zip(val_prompts)]
-    tokenized_train_levels = [mario_lm.tokenizer.encode(lvl_token, return_tensors="pt") for lvl_token in
+    tokenized_train_levels = [mario_lm.tokenizer.encode(lvl_token, return_tensors="pt", truncation=True, max_length=1400) for lvl_token in
                              train_levels_token]
-    tokenized_val_levels = [mario_lm.tokenizer.encode(lvl_token, return_tensors="pt") for lvl_token in
+    tokenized_val_levels = [mario_lm.tokenizer.encode(lvl_token, return_tensors="pt", truncation=True, max_length=1400) for lvl_token in
                            val_levels_token]
 
     train_features_tf = [tf.convert_to_tensor(torch.concat((prompt, level), axis=1).numpy())
@@ -182,13 +182,19 @@ def prepare_dataset(df):
 
 
 if __name__ == "__main__":
+ 	# Ensure GPU availability
+    print(tf.config.list_physical_devices('GPU'))
+    device_name = "GPU" if tf.config.list_physical_devices('GPU') else "CPU"
+    print(f"Using device: {device_name}")
     dataset_path = "../sampling/sampling_score.csv"
     df = pd.read_csv(dataset_path, sep=",")
     train_dataset, val_dataset = prepare_dataset(df)
 
     # Initialize and train the preference model
     preference_model = PreferenceModel()
-    preference_model.fit(train_dataset, val_dataset, num_epochs=50)
+    # Use GPU if available
+    with tf.device('/GPU:0' if tf.config.list_physical_devices('GPU') else '/CPU:0'):
+        preference_model.fit(train_dataset, val_dataset, num_epochs=50)
 
     # Save the trained model
     preference_model.save_model("../preference_model/preference_model.weights.h5")

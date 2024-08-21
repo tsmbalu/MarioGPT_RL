@@ -80,7 +80,7 @@ class PreferenceModel(keras.Model):
             mse = mean_squared_error(all_true_scores, all_predictions)
             mae = mean_absolute_error(all_true_scores, all_predictions)
 
-            print(f"Train Loss: {train_loss / (step + 1)}, Validation Loss: {val_loss / (step + 1)}")
+            print(f"Train Loss: {train_loss / (steps_per_epoch + 1)}, Validation Loss: {val_loss / (validation_steps + 1)}")
             print(f"Validation MSE: {mse}, Validation MAE: {mae}")
 
             if (epoch + 1) % SAVE_FREQ == 0:

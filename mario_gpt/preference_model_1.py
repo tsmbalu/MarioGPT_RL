@@ -6,6 +6,8 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 import pandas as pd
 import torch
 
+from sklearn.metrics import accuracy_score
+
 from mario_gpt import MarioLM, SampleOutput
 
 PRETRAINED_MODEL_PATH = "shyamsn97/Mario-GPT2-700-context-length"
@@ -48,7 +50,8 @@ class PreferenceModel(keras.Model):
         inputs, scores = data
         predictions = self.call(inputs)
         loss = self.loss_fn(scores, predictions)
-        return {'loss': loss, 'predictions': predictions}
+        accuracy = accuracy_score(scores.numpy(), predictions.numpy())
+        return {'loss': loss, 'predictions': predictions, 'accuracy': accuracy}
 
     def fit(self, train_dataset, val_dataset, num_epochs=10, steps_per_epoch=None, validation_steps=None):
         for epoch in range(num_epochs):
@@ -63,29 +66,54 @@ class PreferenceModel(keras.Model):
                 logs = self.train_step(data)
                 train_loss += logs['loss'].numpy()
 
-            # Validation loop
-            val_loss = 0
-            all_predictions = []
-            all_true_scores = []
-            for step, (inputs, scores) in enumerate(val_dataset):
-                if validation_steps and step >= validation_steps:
-                    break
-                data = (inputs, scores)
-                logs = self.test_step(data)
-                val_loss += logs['loss'].numpy()
-                all_predictions.extend(logs['predictions'].numpy().flatten())
-                all_true_scores.extend(data[1].numpy().flatten())
+            val_loss, mse, mae, val_accuracy = self.evaluate(val_dataset, validation_steps)
 
-            # Calculate regression metrics
-            mse = mean_squared_error(all_true_scores, all_predictions)
-            mae = mean_absolute_error(all_true_scores, all_predictions)
-
-            print(f"Train Loss: {train_loss / (steps_per_epoch + 1)}, Validation Loss: {val_loss / (validation_steps + 1)}")
-            print(f"Validation MSE: {mse}, Validation MAE: {mae}")
+            print(
+                f"Train Loss: {train_loss / steps_per_epoch}, Validation Loss: {val_loss}")
+            print(f"Validation MSE: {mse}, Validation MAE: {mae}, Validation Accuracy: {val_accuracy}")
 
             if (epoch + 1) % SAVE_FREQ == 0:
                 self.checkpoint_manager.save()
                 print(f"Model saved at epoch {epoch + 1}")
+
+    def evaluate(self, dataset, steps=None):
+        """
+        Evaluate the model on the provided dataset.
+        :param dataset: tf.data.Dataset, the dataset for evaluation.
+        :param steps: int, the number of steps to evaluate for. Default is None.
+        :return: tuple of (mse, mae, accuracy)
+        """
+        val_loss = 0
+        val_accuracy = 0
+        all_predictions = []
+        all_true_scores = []
+        for step, (inputs, scores) in enumerate(dataset):
+            if steps and step >= steps:
+                break
+            data = (inputs, scores)
+            logs = self.test_step(data)
+            val_loss += logs['loss'].numpy()
+            val_accuracy += logs['accuracy'].numpy()
+            all_predictions.extend(logs['predictions'].numpy().flatten())
+            all_true_scores.extend(data[1].numpy().flatten())
+
+        mse = mean_squared_error(all_true_scores, all_predictions)
+        mae = mean_absolute_error(all_true_scores, all_predictions)
+        val_accuracy /= steps
+        val_loss /= steps
+        return val_loss, mse, mae, val_accuracy
+
+    def predict(self, dataset):
+        """
+        Predict scores for the provided dataset.
+        :param dataset: tf.data.Dataset, the dataset for prediction.
+        :return: list of predictions
+        """
+        all_predictions = []
+        for inputs in dataset:
+            predictions = self.call(inputs)
+            all_predictions.extend(predictions.numpy().flatten())
+        return all_predictions
 
     def save_model(self):
         self.checkpoint_manager.save()
@@ -215,6 +243,27 @@ def prepare_dataset(df, test_size, batch_size=32):
     return train_dataset, val_dataset
 
 
+def trainer(dataset_path, epochs, test_size, batch_size):
+    df = pd.read_csv(dataset_path, sep=",")
+    train_dataset, val_dataset = prepare_dataset(df, test_size, batch_size)
+
+    train_dataset_size = math.ceil(len(df) * (1 - test_size))
+    val_dataset_size = math.ceil(len(df) * test_size)
+
+    steps_per_epoch = train_dataset_size // batch_size
+    validation_steps = val_dataset_size // batch_size
+
+    preference_model = PreferenceModel()
+    preference_model.fit(train_dataset, val_dataset, num_epochs=1, steps_per_epoch=steps_per_epoch,
+                         validation_steps=validation_steps)
+    preference_model.load_model()
+    preference_model.summary()
+    preference_model.print_weights()
+    preference_model.fit(train_dataset, val_dataset, num_epochs=epochs, steps_per_epoch=steps_per_epoch,
+                         validation_steps=validation_steps)
+    preference_model.print_weights()
+
+
 if __name__ == "__main__":
     DATASET_PATH = "../sampling/sampling_score.csv"
     NUM_EPOCHS = 100
@@ -225,23 +274,4 @@ if __name__ == "__main__":
     device_name = "GPU" if tf.config.list_physical_devices('GPU') else "CPU"
     print(f"Using device: {device_name}")
 
-    df = pd.read_csv(DATASET_PATH, sep=",")
-    train_dataset, val_dataset = prepare_dataset(df, TEST_SIZE, BATCH_SIZE)
-
-    train_dataset_size = math.ceil(len(df) * (1 - TEST_SIZE))
-    val_dataset_size = math.ceil(len(df) * TEST_SIZE)
-
-    steps_per_epoch = train_dataset_size // BATCH_SIZE
-    validation_steps = val_dataset_size // BATCH_SIZE
-
-    preference_model = PreferenceModel()
-    preference_model.fit(train_dataset, val_dataset, num_epochs=1, steps_per_epoch=steps_per_epoch,
-                         validation_steps=validation_steps)
-    preference_model.load_model()
-    preference_model.summary()
-    preference_model.print_weights()
-
-    preference_model.fit(train_dataset, val_dataset, num_epochs=NUM_EPOCHS, steps_per_epoch=steps_per_epoch,
-                         validation_steps=validation_steps)
-
-    preference_model.print_weights()
+    trainer(DATASET_PATH, NUM_EPOCHS, TEST_SIZE, BATCH_SIZE)

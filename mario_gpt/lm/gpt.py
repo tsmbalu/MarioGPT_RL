@@ -65,7 +65,7 @@ class MarioGPT(BaseMarioLM):
             )
             return AutoModelWithLMHead.from_config(config)
         return AutoModelWithLMHead.from_pretrained(
-            path, **{**lm_kwargs, "add_cross_attention": True}
+            path, **{**lm_kwargs, "add_cross_attention": True, "output_hidden_states": True}
         )
 
     def load_pretrained_tokenizer(

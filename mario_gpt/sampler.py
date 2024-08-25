@@ -20,6 +20,8 @@ from mario_gpt.utils import (
     view_level,
 )
 
+from mario_gpt.value_head import ValueHead
+
 
 @dataclass
 class SampleOutput:
@@ -179,7 +181,9 @@ class GPTSampler:
                 next_token_scores = self.logits_warper(input_ids, next_token_scores)
                 probs = torch.nn.functional.softmax(next_token_scores, dim=-1)
                 next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
-        return next_tokens, encoder_hidden_states
+
+            last_hidden_state = out.hidden_states[-1]
+        return next_tokens, encoder_hidden_states, next_token_logits, last_hidden_state
 
     def sample(
         self,
@@ -188,9 +192,14 @@ class GPTSampler:
         num_steps: int = 1,
         encoder_hidden_states: torch.Tensor = None,
         return_tensor: bool = False,
+        return_logits: bool = False,
+        return_values: bool = False,
     ):
         self.mario_lm.eval()
         context_len = self.context_len - 28
+        full_logits = torch.tensor([], device=self.device)
+        last_hidden_states = torch.tensor([], device=self.device)
+
         with torch.no_grad():
             if seed is None:
                 seed = self.mario_lm.generate_seed(1, batch_size=len(prompts)).to(
@@ -237,10 +246,14 @@ class GPTSampler:
                         diff = inp.shape[-1] % 14  # height of mario level
                         ctx = context_len + diff
                         inp = inp[:, -ctx:] * 1
-                    next_tokens, encoder_hidden_states = self.step(
+                    next_tokens, encoder_hidden_states, logits, lhidden_state = self.step(
                         inp,
                         encoder_hidden_states=encoder_hidden_states,
                     )
+
+                    logits = logits.unsqueeze(1)
+                    full_logits = torch.cat((full_logits, logits), dim=1)
+                    last_hidden_states = torch.cat((last_hidden_states, lhidden_state[:, -1:, :]), dim=1)
                     out_tensor = torch.cat(
                         [out_tensor, next_tokens.unsqueeze(-1)], dim=-1
                     )
@@ -257,8 +270,14 @@ class GPTSampler:
             self.mario_lm.prompter,
         )
         self.mario_lm.train()
-        if return_tensor:
+        if return_tensor and not return_values and not return_logits:
             return sample_out, out_tensor
+        if return_tensor and return_values and return_logits:
+            value_head = ValueHead(last_hidden_states.shape[2])
+            value_head.to(self.device)
+            values = value_head(last_hidden_states)
+            values = values.squeeze(-1)
+            return sample_out, out_tensor, full_logits, values
         return sample_out
 
     def __call__(self, *args, **kwargs):

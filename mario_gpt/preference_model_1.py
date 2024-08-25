@@ -2,7 +2,7 @@ import math
 import tensorflow as tf
 import keras
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import pandas as pd
 import torch
 
@@ -50,8 +50,11 @@ class PreferenceModel(keras.Model):
         inputs, scores = data
         predictions = self.call(inputs)
         loss = self.loss_fn(scores, predictions)
-        accuracy = accuracy_score(scores.numpy(), predictions.numpy())
-        return {'loss': loss, 'predictions': predictions, 'accuracy': accuracy}
+        # Convert tensors to NumPy arrays
+        scores_np = tf.squeeze(scores).numpy()
+        predictions_np = tf.squeeze(predictions).numpy()
+        r2score = r2_score(scores_np, predictions_np)
+        return {'loss': loss, 'predictions': predictions, 'r2_score': r2score}
 
     def fit(self, train_dataset, val_dataset, num_epochs=10, steps_per_epoch=None, validation_steps=None):
         for epoch in range(num_epochs):
@@ -66,11 +69,11 @@ class PreferenceModel(keras.Model):
                 logs = self.train_step(data)
                 train_loss += logs['loss'].numpy()
 
-            val_loss, mse, mae, val_accuracy = self.evaluate(val_dataset, validation_steps)
+            val_loss, mse, mae, val_metric = self.evaluate(val_dataset, validation_steps)
 
             print(
                 f"Train Loss: {train_loss / steps_per_epoch}, Validation Loss: {val_loss}")
-            print(f"Validation MSE: {mse}, Validation MAE: {mae}, Validation Accuracy: {val_accuracy}")
+            print(f"Validation MSE: {mse}, Validation MAE: {mae}, Validation R2 Score: {val_metric}")
 
             if (epoch + 1) % SAVE_FREQ == 0:
                 self.checkpoint_manager.save()
@@ -84,7 +87,7 @@ class PreferenceModel(keras.Model):
         :return: tuple of (mse, mae, accuracy)
         """
         val_loss = 0
-        val_accuracy = 0
+        val_metric = 0
         all_predictions = []
         all_true_scores = []
         for step, (inputs, scores) in enumerate(dataset):
@@ -93,15 +96,15 @@ class PreferenceModel(keras.Model):
             data = (inputs, scores)
             logs = self.test_step(data)
             val_loss += logs['loss'].numpy()
-            val_accuracy += logs['accuracy'].numpy()
+            val_metric += logs['r2_score']
             all_predictions.extend(logs['predictions'].numpy().flatten())
             all_true_scores.extend(data[1].numpy().flatten())
 
         mse = mean_squared_error(all_true_scores, all_predictions)
         mae = mean_absolute_error(all_true_scores, all_predictions)
-        val_accuracy /= steps
+        val_metric /= steps
         val_loss /= steps
-        return val_loss, mse, mae, val_accuracy
+        return val_loss, mse, mae, val_metric
 
     def predict(self, dataset):
         """

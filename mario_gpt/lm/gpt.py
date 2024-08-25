@@ -86,6 +86,8 @@ class MarioGPT(BaseMarioLM):
         encoder_hidden_states: torch.Tensor = None,
         use_tqdm: bool = False,
         return_tensor: bool = False,
+        return_logits: bool = False,
+        return_values: bool = False,
     ) -> SampleOutput:
         sampler = GPTSampler(self, temperature, 16, self.context_len, use_tqdm)
         return sampler(
@@ -94,4 +96,6 @@ class MarioGPT(BaseMarioLM):
             num_steps=num_steps,
             encoder_hidden_states=encoder_hidden_states,
             return_tensor=return_tensor,
+            return_logits=return_logits,
+            return_values=return_values,
         )

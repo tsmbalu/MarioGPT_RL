@@ -2,9 +2,7 @@ import torch
 from torch.optim import AdamW
 import torch.nn.functional as F
 from mario_gpt import MarioLM, SampleOutput
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from value_head import ValueHead
 from preference_model_1 import PreferenceModel
 
 
@@ -33,14 +31,16 @@ class PPOTrainer:
         reward = preferability - self.beta * kl_div
         return reward
 
-    def ppo_loss(self, advantages, rewards, old_values):
-        def loss_fn(y_true, y_pred):
-            prob_ratio = torch.exp(torch.log(y_pred + 1e-10) - torch.log(y_true + 1e-10))
+    def ppo_loss(self, advantages, rewards, values):
+        advantages = advantages.view(1, -1, 1)
+
+        def loss_fn(old_logits, current_logits):
+            prob_ratio = torch.exp(torch.log(current_logits + 1e-10) - torch.log(old_logits + 1e-10))
             clipped_ratio = torch.clamp(prob_ratio, 1 - self.clip_ratio, 1 + self.clip_ratio)
             surrogate1 = prob_ratio * advantages
             surrogate2 = clipped_ratio * advantages
             actor_loss = -torch.mean(torch.min(surrogate1, surrogate2))
-            critic_loss = torch.mean((rewards - old_values) ** 2)
+            critic_loss = torch.mean((rewards - values) ** 2)
             return actor_loss + critic_loss
 
         return loss_fn
@@ -66,70 +66,83 @@ class PPOTrainer:
         self.finetune_mario_lm.train()
         for epoch in range(num_epochs):
             total_loss = 0
-            all_rewards, all_values, all_advantages = [], [], []
 
             for prompt in prompts:
                 # Generate level with the current policy
-                response = self.finetune_mario_lm.sample(prompts=[prompt], num_steps=1400,
-                                                         temperature=2.5, use_tqdm=True)
+                response, response_tensor, current_logits, value = self.finetune_mario_lm.sample(prompts=[prompt],
+                                                                                                 num_steps=1400,
+                                                                                                 temperature=2.5,
+                                                                                                 use_tqdm=True,
+                                                                                                 return_tensor=True,
+                                                                                                 return_logits=True,
+                                                                                                 return_values=True)
 
-                # prompt_tensor = self.initial_mario_lm.prompter.output_hidden(prompt)
-                # response_tensor = response.level_tensor
-                # prompt_tensor = prompt_tensor.to(self.finetune_mario_lm.device)
-                # response_tensor = response_tensor.to(self.finetune_mario_lm.device)
+                prompt_tensor = self.initial_mario_lm.prompter.output_hidden(prompt)
+                prompt_tensor = prompt_tensor.view(prompt_tensor.shape[0], 1, prompt_tensor.shape[1])
+                prompt_tensor = prompt_tensor.to(self.initial_mario_lm.device)
+                response_tensor = response_tensor[:, 1:]
+                response_tensor = response_tensor.to(self.initial_mario_lm.device)
 
-                combined_input = prompt + ' ' + self.convert_to_level_token(response.level)
-
-                # Combine the prompt and response tensors for input
-                input_ids = self.finetune_mario_lm.tokenizer.encode(combined_input, return_tensors="pt",
-                                                                    truncation=True, max_length=700)
-                input_ids = input_ids.unsqueeze(0)
-                input_ids = input_ids.to(self.finetune_mario_lm.device)
-
-                attention_mask = torch.ones(input_ids.shape, device=self.finetune_mario_lm.device)
-
-                # Forward pass through the initial and fine-tuned models
-                with torch.no_grad():  # No gradient computation for the initial model
-                    initial_outputs = self.initial_mario_lm.lm(input_ids=input_ids, attention_mask=attention_mask)
-                    initial_logits = initial_outputs.logits  # Get the logits for the initial model
-
-                    # Forward pass through the fine-tuned model
-                    current_outputs = self.finetune_mario_lm.lm(input_ids=input_ids, attention_mask=attention_mask)
-                    current_logits = current_outputs.logits  # Get the logits for the fine-tuned model
-                    last_hidden_states = current_outputs.hidden_states[-1]
-                    last_hidden_states = last_hidden_states.squeeze(0)
-                    value_head = ValueHead(last_hidden_states.shape[2])
-                    value_head.to(self.finetune_mario_lm.device)
-                    values = value_head(last_hidden_states)
+                # Forward pass through the initial models
+                initial_logits, _ = self.forward_pass(self.initial_mario_lm, prompt_tensor, response_tensor)
 
                 preferability = 1.0
 
                 reward = self.compute_reward(preferability, initial_logits, current_logits)
 
-                all_rewards.append(reward)
-                all_values.append(values)
-
-            advantages = self.get_advantages(all_rewards, all_values)
-            all_advantages.extend(advantages)
-
-            for input_ids, (reward, advantage, value) in zip(dataset, zip(all_rewards, all_advantages, all_values)):
-                input_ids = input_ids.to(self.finetune_mario_lm.device)
-                advantage = advantage.to(self.finetune_mario_lm.device)
-                reward = reward.to(self.finetune_mario_lm.device)
+                advantage = self.get_advantages(reward, value)
 
                 self.optimizer.zero_grad()
-                logits = self.finetune_mario_lm(input_ids).logits
-                loss_fn = self.ppo_loss(advantage, reward, value)
-                loss = loss_fn(logits, logits)
+                logits, _ = self.forward_pass(self.finetune_mario_lm, prompt_tensor, response_tensor)
+                loss_fn = self.ppo_loss(advantage[0], reward, value)
+                loss = loss_fn(initial_logits, logits)
                 loss.backward()
                 self.optimizer.step()
                 total_loss += loss.item()
 
-            print(f"Epoch {epoch + 1}, Loss: {total_loss / len(dataset)}")
+            print(f"Epoch {epoch + 1}, Loss: {total_loss / len(prompts)}")
 
             if (epoch + 1) % save_freq == 0:
                 self.save_checkpoint(epoch + 1)
                 print(f"Model saved at epoch {epoch + 1}")
+
+    def forward_pass(self, model, prompt_tensor, response_tensor):
+        with torch.no_grad():  # No gradient computation for the initial model
+            context_len = 672
+            step_size = 14
+
+            diff = response_tensor.shape[-1] % step_size
+            ctx = context_len + diff
+            start_idx = 0
+
+            logits = torch.tensor([], device=model.device)
+            last_hidden_states = torch.tensor([], device=model.device)
+
+            while start_idx + ctx <= response_tensor.shape[-1]:
+                # Extract the portion from the tensor
+                chunk_response_tensor = response_tensor[:, start_idx:start_idx + ctx]
+                attention_mask = torch.ones(chunk_response_tensor.shape, device=model.device)
+
+                outputs = model.lm(input_ids=chunk_response_tensor,
+                                   attention_mask=attention_mask,
+                                   encoder_hidden_states=prompt_tensor,
+                                   token_type_ids=None,
+                                   )
+
+                ilogits = outputs.logits.detach()
+                ilogits = ilogits.squeeze(1)
+                lhidden_state = outputs.hidden_states[-1]
+
+                if start_idx == 0:
+                    logits = torch.cat((logits, ilogits[:, start_idx:, :]), dim=1)
+                    last_hidden_states = torch.cat((last_hidden_states, lhidden_state[:, start_idx:, :]), dim=1)
+
+                else:
+                    logits = torch.cat((logits, ilogits[:, -step_size:, :]), dim=1)
+                    last_hidden_states = torch.cat((last_hidden_states, lhidden_state[:, -step_size:, :]), dim=1)
+
+                start_idx += step_size
+        return logits, last_hidden_states
 
     def get_advantages(self, rewards, values, gamma=0.99, lam=0.95):
         advantages = []
@@ -157,7 +170,7 @@ def trainer():
     preference_model = PreferenceModel()
     checkpoint_dir = '../checkpoints/ppo'
     ppo_trainer = PPOTrainer(initial_mario_lm, finetune_mario_lm, preference_model, checkpoint_dir, 0.01, 0.2)
-    ppo_trainer.train(['many pipes many enemies many blocks high elevation'], 1)
+    ppo_trainer.train(['many pipes many enemies many blocks high elevation'], 10)
 
 
 if __name__ == "__main__":

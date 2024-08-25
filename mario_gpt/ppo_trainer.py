@@ -52,7 +52,7 @@ class PPOTrainer:
 
         return loss_fn
 
-    def next(self, dataset, num_epochs=10, save_freq=5):
+    def train(self, dataset, num_epochs=10, save_freq=5):
         for epoch in range(num_epochs):
             total_loss = 0
             all_rewards, all_values, all_advantages = [], [], []

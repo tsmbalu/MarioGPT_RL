@@ -2,15 +2,22 @@ import torch
 import torch.nn as nn
 import numpy as np
 import pandas as pd
+import os
+import logging
 
+from datetime import datetime
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.utils.data import DataLoader, Dataset
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 
 from mario_gpt import MarioLM, SampleOutput
 
 PRETRAINED_MODEL_PATH = "shyamsn97/Mario-GPT2-700-context-length"
+
+LOG_FILE_PATH = '../logs/pmv2_training_log.log'
+# Configure logging
+logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class PreferenceModel(nn.Module):
@@ -66,6 +73,7 @@ class PreferenceDataset(Dataset):
         return len(self.scores)
 
     def __getitem__(self, idx):
+        print(f'Batch No: {idx}')
         return {
             'input_ids': self.input_ids[idx],
             'encoder_hidden_states': self.encoder_hidden_states[idx],
@@ -101,6 +109,7 @@ def validate(model, dataloader, criterion, device):
     all_labels = []
     with torch.no_grad():
         for batch in dataloader:
+            print(f'Test Batch:{batch}')
             input_ids = batch['input_ids'].to(device)
             encoder_hidden_states = batch['encoder_hidden_states'].to(device)
             scores = batch['scores'].to(device)
@@ -116,7 +125,34 @@ def validate(model, dataloader, criterion, device):
     all_preds = np.concatenate(all_preds, axis=0)
     all_labels = np.concatenate(all_labels, axis=0)
     mse = mean_squared_error(all_labels, all_preds)
-    return epoch_loss, mse
+    mae = mean_absolute_error(all_labels, all_preds)
+    r2score = r2_score(all_labels, all_preds)
+    return epoch_loss, mse, mae, r2score
+
+
+def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_path="checkpoint.pth"):
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_loss': val_loss
+    }
+    torch.save(checkpoint, checkpoint_path)
+    logging.info(f"Checkpoint saved at epoch {epoch+1}")
+
+
+def load_checkpoint(checkpoint_path, model, optimizer):
+    if os.path.isfile(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_val_loss = checkpoint['val_loss']
+        logging.info(f"Checkpoint loaded. Resuming training from epoch {start_epoch}")
+        return start_epoch, best_val_loss
+    else:
+        logging.info("No checkpoint found, starting from scratch.")
+        return 0, float('inf')
 
 
 def convert_to_level_token(levels: list):
@@ -146,8 +182,8 @@ def convert_to_level_token(levels: list):
 def prepare_dataset(df, test_size):
     # Split the dataset
     train_df, test_df = train_test_split(df, test_size=test_size, random_state=42, stratify=df[['prompt']])
-    print('Train Shape:', train_df.shape)
-    print('Test Shape:', test_df.shape)
+    logging.info(f'Train Shape: {train_df.shape}')
+    logging.info(f'Test Shape: {test_df.shape}')
     train_prompts = train_df['prompt'].astype(str).tolist()
     train_levels = train_df['level_file_path'].astype(str).tolist()
     train_levels_token = convert_to_level_token(train_levels)
@@ -176,10 +212,12 @@ def prepare_dataset(df, test_size):
 
 if __name__ == "__main__":
     DATASET_PATH = "../sampling/sampling_score.csv"
+    CHECKPOINT_PATH = "../checkpoints/pm_v2/pmv2_checkpoint.pth"
     # Hyperparameters
     batch_size = 4
     learning_rate = 1e-5
-    epochs = 3
+    epochs = 500
+    early_stop_patience = 100  # Stop if validation loss doesn't improve for 10 epochs
 
     # Initialize model
     model = PreferenceModel()
@@ -196,13 +234,40 @@ if __name__ == "__main__":
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     criterion = nn.MSELoss()
 
+    # Log the start of training
+    start_time = datetime.now()
+    logging.info(f"Training started at {start_time}")
+
+    # Load checkpoint if available
+    start_epoch, best_val_loss = load_checkpoint(CHECKPOINT_PATH, model, optimizer)
+
     # Training loop
-    for epoch in range(epochs):
-        print(f"Epoch {epoch + 1}/{epochs}")
+    epochs_no_improve = 0
+    for epoch in range(start_epoch, epochs):
+        logging.info(f"Epoch {epoch + 1}/{epochs}")
         train_loss = train(model, train_dataloader, optimizer, criterion, device)
-        val_loss, val_mse = validate(model, val_dataloader, criterion, device)
+        val_loss, val_mse, val_mae, r2score = validate(model, val_dataloader, criterion, device)
 
-        print(f"Training Loss: {train_loss:.4f}")
-        print(f"Validation Loss: {val_loss:.4f}")
-        print(f"Validation MSE: {val_mse:.4f}")
+        logging.info(f"Training Loss: {train_loss:.4f}")
+        logging.info(f"Validation Loss: {val_loss:.4f}")
+        logging.info(f"Validation MSE: {val_mse:.4f}")
+        logging.info(f"Validation MAE: {val_mae:.4f}")
+        logging.info(f"Validation R2 Score: {r2score:.4f}")
 
+        # Check for improvement
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_checkpoint(model, optimizer, epoch, best_val_loss, checkpoint_path=CHECKPOINT_PATH)
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+
+        # Early stopping
+        if epochs_no_improve >= early_stop_patience:
+            logging.info(f"Early stopping at epoch {epoch + 1}")
+            break
+
+    # Log the end of training
+    end_time = datetime.now()
+    logging.info(f"Training ended at {end_time}")
+    logging.info(f"Total training time: {end_time - start_time}")

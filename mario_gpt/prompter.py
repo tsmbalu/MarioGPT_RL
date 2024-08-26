@@ -28,12 +28,14 @@ class Prompter:
         use_raw_counts: bool = False,
         statistics: Optional[Dict[str, Any]] = None,
     ):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.prompter_model = prompter_model
         self.feature_extraction = pipeline(
             "feature-extraction",
             model=prompter_model,
             tokenizer=prompter_model,
             framework="pt",
+            device=self.device,
         )
 
         self.level_tokenizer = level_tokenizer

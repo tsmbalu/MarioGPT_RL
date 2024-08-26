@@ -5,8 +5,9 @@ import pandas as pd
 import os
 import logging
 
+from tqdm import tqdm
 from datetime import datetime
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
 from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
@@ -21,11 +22,11 @@ logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO, format='%(asctim
 
 
 class PreferenceModel(nn.Module):
-    def __init__(self, model_name=PRETRAINED_MODEL_PATH, chunk_size=700):
+    def __init__(self, model_name=PRETRAINED_MODEL_PATH, context_len=700):
         super(PreferenceModel, self).__init__()
         self.mariolm = AutoModelForCausalLM.from_pretrained(model_name, **{"add_cross_attention": True,
                                                                            "output_hidden_states": True})
-        self.chunk_size = chunk_size
+        self.chunk_size = context_len
         self.regression = nn.Linear(self.mariolm.config.hidden_size, 3)
         self.dropout = nn.Dropout(0.1)
         self.pooling = nn.AdaptiveAvgPool1d(1)
@@ -62,9 +63,28 @@ class PreferenceModel(nn.Module):
         preference_score = pooled_logits.squeeze(-1)
         return preference_score
 
+    def predict(self, input_ids, encoder_hidden_states, device=None):
+        """
+        Predict preference scores for given input_ids and encoder_hidden_states.
+
+        :param input_ids: torch.Tensor, shape [batch_size, seq_len]
+        :param encoder_hidden_states: torch.Tensor, shape [batch_size, seq_len, hidden_size]
+        :param device: torch.device, device to run the prediction on
+        :return: torch.Tensor, shape [batch_size, 3]
+        """
+        if device:
+            self.to(device)
+            input_ids = input_ids.to(device)
+            encoder_hidden_states = encoder_hidden_states.to(device)
+
+        self.eval()  # Set the model to evaluation mode
+        with torch.no_grad():  # Disable gradient computation
+            preference_scores = self(input_ids, encoder_hidden_states)
+        return preference_scores
 
 class PreferenceDataset(Dataset):
-    def __init__(self, input_ids: torch.LongTensor, encoder_hidden_states: torch.FloatTensor, scores: torch.FloatTensor):
+    def __init__(self, input_ids: torch.LongTensor, encoder_hidden_states: torch.FloatTensor,
+                 scores: torch.FloatTensor):
         self.input_ids = input_ids
         self.encoder_hidden_states = encoder_hidden_states
         self.scores = scores
@@ -73,7 +93,6 @@ class PreferenceDataset(Dataset):
         return len(self.scores)
 
     def __getitem__(self, idx):
-        print(f'Batch No: {idx}')
         return {
             'input_ids': self.input_ids[idx],
             'encoder_hidden_states': self.encoder_hidden_states[idx],
@@ -84,7 +103,10 @@ class PreferenceDataset(Dataset):
 def train(model, dataloader, optimizer, criterion, device):
     model.train()
     running_loss = 0.0
-    for batch in dataloader:
+    total_batches = len(dataloader)
+
+    # Wrap the dataloader with tqdm for a progress bar
+    for batch in tqdm(dataloader, desc="Training", total=total_batches):
         input_ids = batch['input_ids'].to(device)
         encoder_hidden_states = batch['encoder_hidden_states'].to(device)
         scores = batch['scores'].to(device)
@@ -107,9 +129,11 @@ def validate(model, dataloader, criterion, device):
     running_loss = 0.0
     all_preds = []
     all_labels = []
+    total_batches = len(dataloader)
+
+    # Wrap the dataloader with tqdm for a progress bar
     with torch.no_grad():
-        for batch in dataloader:
-            print(f'Test Batch:{batch}')
+        for batch in tqdm(dataloader, desc="Validating", total=total_batches):
             input_ids = batch['input_ids'].to(device)
             encoder_hidden_states = batch['encoder_hidden_states'].to(device)
             scores = batch['scores'].to(device)
@@ -138,7 +162,7 @@ def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_path="checkpoi
         'val_loss': val_loss
     }
     torch.save(checkpoint, checkpoint_path)
-    logging.info(f"Checkpoint saved at epoch {epoch+1}")
+    logging.info(f"Checkpoint saved at epoch {epoch + 1}")
 
 
 def load_checkpoint(checkpoint_path, model, optimizer):

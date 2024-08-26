@@ -45,7 +45,7 @@ venv
 */**/.ipynb_checkpoints/*
 
 # logs
-*/**/checkpoints/*
+#*/**/checkpoints/*
 */**/mlruns/*
 */**/tensorboard_logs/*
 */**/wandb/*

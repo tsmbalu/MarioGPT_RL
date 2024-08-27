@@ -3,7 +3,9 @@ import torch.nn as nn
 import numpy as np
 import pandas as pd
 import os
+import json
 import logging
+import shutil
 
 from tqdm import tqdm
 from datetime import datetime
@@ -82,6 +84,7 @@ class PreferenceModel(nn.Module):
             preference_scores = self(input_ids, encoder_hidden_states)
         return preference_scores
 
+
 class PreferenceDataset(Dataset):
     def __init__(self, input_ids: torch.LongTensor, encoder_hidden_states: torch.FloatTensor,
                  scores: torch.FloatTensor):
@@ -154,7 +157,15 @@ def validate(model, dataloader, criterion, device):
     return epoch_loss, mse, mae, r2score
 
 
-def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_path="checkpoint.pth"):
+def get_checkpoint_details(checkpoint_dir, checkpoint_name) -> (int, float):
+    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
+    checkpoint = torch.load(checkpoint_path)
+    checkpoint_epoch = checkpoint['epoch'] + 1
+    checkpoint_val_loss = checkpoint['val_loss']
+    return checkpoint_epoch, checkpoint_val_loss
+
+
+def save_model_checkpoint(model, optimizer, epoch, val_loss, checkpoint_path):
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -162,18 +173,110 @@ def save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_path="checkpoi
         'val_loss': val_loss
     }
     torch.save(checkpoint, checkpoint_path)
-    logging.info(f"Checkpoint saved at epoch {epoch + 1}")
+    logging.info(f"Checkpoint saved at epoch {epoch + 1}: {checkpoint_path}")
 
 
-def load_checkpoint(checkpoint_path, model, optimizer):
-    if os.path.isfile(checkpoint_path):
+def load_metadata(meta_file_path):
+    if os.path.exists(meta_file_path):
+        with open(meta_file_path, 'r') as meta_file:
+            return json.load(meta_file)
+    else:
+        return {'checkpoints': [], 'best_checkpoint': None}
+
+
+def update_metadata(metadata, checkpoint_path, epoch, val_loss):
+    checkpoint_exists = False
+
+    # Check if the checkpoint already exists in metadata
+    for ckpt in metadata['checkpoints']:
+        if ckpt['path'] == checkpoint_path:
+            ckpt['epoch'] = epoch
+            ckpt['val_loss'] = val_loss
+            checkpoint_exists = True
+            logging.info(f"Metadata updated for existing checkpoint: {checkpoint_path}")
+            break
+
+    if not checkpoint_exists:
+        # Add new checkpoint metadata
+        metadata['checkpoints'].append({
+            'path': checkpoint_path,
+            'epoch': epoch,
+            'val_loss': val_loss
+        })
+
+    # Update the best checkpoint if needed
+    if metadata['best_checkpoint'] is None or val_loss < metadata['best_checkpoint']['val_loss']:
+        ckpt_file_name = os.path.basename(checkpoint_path)
+        ckpt_dir = os.path.dirname(checkpoint_path)
+        bckpt_file_name = f'best_{ckpt_file_name}'
+        bckpt_path = os.path.join(ckpt_dir, bckpt_file_name)
+        metadata['best_checkpoint'] = {
+            'path': bckpt_path,
+            'epoch': epoch,
+            'val_loss': val_loss
+        }
+        logging.info(f"New best checkpoint updated: {checkpoint_path}")
+
+
+def manage_checkpoints(metadata, max_to_keep):
+    if len(metadata['checkpoints']) > max_to_keep:
+        # Remove the oldest checkpoint
+        old_checkpoint = metadata['checkpoints'].pop(0)
+        if os.path.exists(old_checkpoint['path']):
+            os.remove(old_checkpoint['path'])
+            logging.info(f"Removed old checkpoint: {old_checkpoint['path']}")
+
+
+def save_metadata(metadata, meta_file_path):
+    with open(meta_file_path, 'w') as meta_file:
+        json.dump(metadata, meta_file, indent=4)
+        logging.info(f"Metadata saved/updated in {meta_file_path}")
+
+
+def save_checkpoint(model, optimizer, epoch, val_loss, max_to_keep=3, checkpoint_dir="../checkpoints/pm_v2/", prefix=None):
+    checkpoint_name = f"{prefix}checkpoint_epoch_{epoch + 1}.pth"
+    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
+
+    # Save the model checkpoint
+    save_model_checkpoint(model, optimizer, epoch, val_loss, checkpoint_path)
+
+    # Load existing metadata or initialize new
+    meta_file_path = os.path.join(checkpoint_dir, 'checkpoint_meta.json')
+    metadata = load_metadata(meta_file_path)
+
+    # Update or add checkpoint metadata
+    update_metadata(metadata, checkpoint_path, epoch, val_loss)
+
+    manage_checkpoints(metadata, max_to_keep, checkpoint_dir)
+
+    # Save updated metadata
+    save_metadata(metadata, meta_file_path)
+
+
+def load_checkpoint(checkpoint_dir, model, optimizer):
+    meta_file_path = os.path.join(checkpoint_dir, 'checkpoint_meta.json')
+
+    if os.path.exists(meta_file_path):
+        # Load metadata from the JSON file
+        with open(meta_file_path, 'r') as meta_file:
+            metadata = json.load(meta_file)
+
+        if not metadata['checkpoints']:
+            logging.info("No checkpoints listed in metadata, starting from scratch.")
+            return 0, float('inf')
+
+        # Load the latest checkpoint based on the metadata
+        latest_checkpoint = metadata['checkpoints'][-1]
+        checkpoint_path = latest_checkpoint['path']
         checkpoint = torch.load(checkpoint_path)
+
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
-        best_val_loss = checkpoint['val_loss']
-        logging.info(f"Checkpoint loaded. Resuming training from epoch {start_epoch}")
-        return start_epoch, best_val_loss
+        ckpt_epoch = checkpoint['epoch'] + 1
+        ckpt_val_loss = checkpoint['val_loss']
+
+        logging.info(f"Loaded checkpoint from epoch {ckpt_epoch}, resuming from epoch {ckpt_epoch+1}")
+        return ckpt_epoch, ckpt_val_loss
     else:
         logging.info("No checkpoint found, starting from scratch.")
         return 0, float('inf')
@@ -212,6 +315,7 @@ def prepare_dataset(df, test_size):
     train_levels = train_df['level_file_path'].astype(str).tolist()
     train_levels_token = convert_to_level_token(train_levels)
     train_scores = train_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']].to_numpy()
+
     val_prompts = test_df['prompt'].astype(str).tolist()
     val_levels = test_df['level_file_path'].astype(str).tolist()
     val_levels_token = convert_to_level_token(val_levels)
@@ -236,12 +340,13 @@ def prepare_dataset(df, test_size):
 
 if __name__ == "__main__":
     DATASET_PATH = "../sampling/sampling_score.csv"
-    CHECKPOINT_PATH = "../checkpoints/pm_v2/pmv2_checkpoint.pth"
+    CHECKPOINT_DIR = "../checkpoints/pm_v2/"
     # Hyperparameters
     batch_size = 4
     learning_rate = 1e-5
     epochs = 500
-    early_stop_patience = 100  # Stop if validation loss doesn't improve for 10 epochs
+    early_stop_patience = 5  # Stop if validation loss doesn't improve for 5 epochs
+    min_epochs = 50  # Minimum number of epochs before early stopping is considered
 
     # Initialize model
     model = PreferenceModel()
@@ -262,8 +367,8 @@ if __name__ == "__main__":
     start_time = datetime.now()
     logging.info(f"Training started at {start_time}")
 
-    # Load checkpoint if available
-    start_epoch, best_val_loss = load_checkpoint(CHECKPOINT_PATH, model, optimizer)
+    # Load the latest checkpoint if available
+    start_epoch, best_val_loss = load_checkpoint(CHECKPOINT_DIR, model, optimizer)
 
     # Training loop
     epochs_no_improve = 0
@@ -278,16 +383,16 @@ if __name__ == "__main__":
         logging.info(f"Validation MAE: {val_mae:.4f}")
         logging.info(f"Validation R2 Score: {r2score:.4f}")
 
+        save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir='../checkpoints/pm_v2/', prefix='pmv2_')
         # Check for improvement
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            save_checkpoint(model, optimizer, epoch, best_val_loss, checkpoint_path=CHECKPOINT_PATH)
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
 
-        # Early stopping
-        if epochs_no_improve >= early_stop_patience:
+        # Early stopping: only consider stopping after `min_epochs` have passed
+        if epoch + 1 >= min_epochs and epochs_no_improve >= early_stop_patience:
             logging.info(f"Early stopping at epoch {epoch + 1}")
             break
 

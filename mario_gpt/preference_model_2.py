@@ -160,7 +160,7 @@ def validate(model, dataloader, criterion, device):
 def get_checkpoint_details(checkpoint_dir, checkpoint_name) -> (int, float):
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
     checkpoint = torch.load(checkpoint_path)
-    checkpoint_epoch = checkpoint['epoch'] + 1
+    checkpoint_epoch = checkpoint['epoch']
     checkpoint_val_loss = checkpoint['val_loss']
     return checkpoint_epoch, checkpoint_val_loss
 
@@ -173,7 +173,7 @@ def save_model_checkpoint(model, optimizer, epoch, val_loss, checkpoint_path):
         'val_loss': val_loss
     }
     torch.save(checkpoint, checkpoint_path)
-    logging.info(f"Checkpoint saved at epoch {epoch + 1}: {checkpoint_path}")
+    logging.info(f"Checkpoint saved at epoch {epoch}: {checkpoint_path}")
 
 
 def load_metadata(meta_file_path):
@@ -184,47 +184,53 @@ def load_metadata(meta_file_path):
         return {'checkpoints': [], 'best_checkpoint': None}
 
 
-def update_metadata(metadata, checkpoint_path, epoch, val_loss):
+def update_metadata(metadata, checkpoint_dir, checkpoint_name, epoch, val_loss):
     checkpoint_exists = False
 
     # Check if the checkpoint already exists in metadata
     for ckpt in metadata['checkpoints']:
-        if ckpt['path'] == checkpoint_path:
+        if ckpt['name'] == checkpoint_name:
             ckpt['epoch'] = epoch
             ckpt['val_loss'] = val_loss
             checkpoint_exists = True
-            logging.info(f"Metadata updated for existing checkpoint: {checkpoint_path}")
+            logging.info(f"Metadata updated for existing checkpoint: {checkpoint_name}")
             break
 
     if not checkpoint_exists:
         # Add new checkpoint metadata
         metadata['checkpoints'].append({
-            'path': checkpoint_path,
+            'name': checkpoint_name,
             'epoch': epoch,
             'val_loss': val_loss
         })
 
     # Update the best checkpoint if needed
-    if metadata['best_checkpoint'] is None or val_loss < metadata['best_checkpoint']['val_loss']:
-        ckpt_file_name = os.path.basename(checkpoint_path)
-        ckpt_dir = os.path.dirname(checkpoint_path)
-        bckpt_file_name = f'best_{ckpt_file_name}'
-        bckpt_path = os.path.join(ckpt_dir, bckpt_file_name)
+    if metadata.get('best_checkpoint') is None or val_loss < metadata['best_checkpoint']['val_loss']:
+        bckpt_file_name = f'best_{checkpoint_name}'
+        src_file = os.path.join(checkpoint_dir, checkpoint_name)
+        dest_file = os.path.join(checkpoint_dir, bckpt_file_name)
+        shutil.copy(src_file, dest_file)
+
+        old_best_file = os.path.join(checkpoint_dir, metadata['best_checkpoint']['name'])
+        if os.path.exists(old_best_file):
+            os.remove(old_best_file)
+
         metadata['best_checkpoint'] = {
-            'path': bckpt_path,
+            'name': bckpt_file_name,
             'epoch': epoch,
             'val_loss': val_loss
         }
-        logging.info(f"New best checkpoint updated: {checkpoint_path}")
+        logging.info(f"New best checkpoint updated: {bckpt_file_name}")
 
 
-def manage_checkpoints(metadata, max_to_keep):
+def manage_checkpoints(metadata, max_to_keep, ckpt_dir):
     if len(metadata['checkpoints']) > max_to_keep:
         # Remove the oldest checkpoint
         old_checkpoint = metadata['checkpoints'].pop(0)
-        if os.path.exists(old_checkpoint['path']):
-            os.remove(old_checkpoint['path'])
-            logging.info(f"Removed old checkpoint: {old_checkpoint['path']}")
+        old_ckpt_path = os.path.join(ckpt_dir, old_checkpoint['name'])
+        if os.path.exists(old_ckpt_path):
+            os.remove(old_ckpt_path)
+            logging.info(f"Removed old checkpoint: {old_checkpoint['name']}")
 
 
 def save_metadata(metadata, meta_file_path):
@@ -234,7 +240,7 @@ def save_metadata(metadata, meta_file_path):
 
 
 def save_checkpoint(model, optimizer, epoch, val_loss, max_to_keep=3, checkpoint_dir="../checkpoints/pm_v2/", prefix=None):
-    checkpoint_name = f"{prefix}checkpoint_epoch_{epoch + 1}.pth"
+    checkpoint_name = f"{prefix}checkpoint_epoch_{epoch}.pth"
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
 
     # Save the model checkpoint
@@ -245,7 +251,7 @@ def save_checkpoint(model, optimizer, epoch, val_loss, max_to_keep=3, checkpoint
     metadata = load_metadata(meta_file_path)
 
     # Update or add checkpoint metadata
-    update_metadata(metadata, checkpoint_path, epoch, val_loss)
+    update_metadata(metadata, checkpoint_dir, checkpoint_name, epoch, val_loss)
 
     manage_checkpoints(metadata, max_to_keep, checkpoint_dir)
 
@@ -267,7 +273,8 @@ def load_checkpoint(checkpoint_dir, model, optimizer):
 
         # Load the latest checkpoint based on the metadata
         latest_checkpoint = metadata['checkpoints'][-1]
-        checkpoint_path = latest_checkpoint['path']
+        checkpoint_name = latest_checkpoint['name']
+        checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
         checkpoint = torch.load(checkpoint_path)
 
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -338,42 +345,30 @@ def prepare_dataset(df, test_size):
     return train_dataset, val_dataset
 
 
-if __name__ == "__main__":
-    DATASET_PATH = "../sampling/sampling_score.csv"
-    CHECKPOINT_DIR = "../checkpoints/pm_v2/"
-    # Hyperparameters
-    batch_size = 4
-    learning_rate = 1e-5
-    epochs = 500
-    early_stop_patience = 5  # Stop if validation loss doesn't improve for 5 epochs
-    min_epochs = 50  # Minimum number of epochs before early stopping is considered
-
+def trainer(data_set: str, checkpoint_dir: str, learning_rate: float, batch_size: int, epochs: int,
+            early_stop_patience: int, min_epochs: int):
+    global device
     # Initialize model
     model = PreferenceModel()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
-
-    df = pd.read_csv(DATASET_PATH, sep=",")
+    df = pd.read_csv(data_set, sep=",")
     train_dataset, val_dataset = prepare_dataset(df, test_size=0.25)
-
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
-
     # Define optimizer and loss function
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     criterion = nn.MSELoss()
-
     # Log the start of training
     start_time = datetime.now()
     logging.info(f"Training started at {start_time}")
-
     # Load the latest checkpoint if available
-    start_epoch, best_val_loss = load_checkpoint(CHECKPOINT_DIR, model, optimizer)
-
+    start_epoch, best_val_loss = load_checkpoint(checkpoint_dir, model, optimizer)
     # Training loop
     epochs_no_improve = 0
     for epoch in range(start_epoch, epochs):
-        logging.info(f"Epoch {epoch + 1}/{epochs}")
+        curr_epoch = epoch + 1
+        logging.info(f"Epoch {curr_epoch}/{epochs}")
         train_loss = train(model, train_dataloader, optimizer, criterion, device)
         val_loss, val_mse, val_mae, r2score = validate(model, val_dataloader, criterion, device)
 
@@ -383,20 +378,33 @@ if __name__ == "__main__":
         logging.info(f"Validation MAE: {val_mae:.4f}")
         logging.info(f"Validation R2 Score: {r2score:.4f}")
 
-        save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir='../checkpoints/pm_v2/', prefix='pmv2_')
+        save_checkpoint(model, optimizer, curr_epoch, val_loss, checkpoint_dir=checkpoint_dir, prefix='pmv2_')
         # Check for improvement
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
+            logging.info(f'No improvement in loss for the last {epochs_no_improve} epochs')
 
         # Early stopping: only consider stopping after `min_epochs` have passed
-        if epoch + 1 >= min_epochs and epochs_no_improve >= early_stop_patience:
-            logging.info(f"Early stopping at epoch {epoch + 1}")
+        if curr_epoch >= min_epochs and epochs_no_improve >= early_stop_patience:
+            logging.info(f"Early stopping at epoch {curr_epoch}")
             break
-
     # Log the end of training
     end_time = datetime.now()
     logging.info(f"Training ended at {end_time}")
     logging.info(f"Total training time: {end_time - start_time}")
+
+
+if __name__ == "__main__":
+    DATASET_PATH = "../sampling/sampling_score.csv"
+    CHECKPOINT_DIR = "../checkpoints/pm_v2/"
+    # Hyperparameters
+    BATCH_SIZE = 4
+    LEARNING_PATH = 1e-5
+    EPOCHS = 500
+    EARLY_STOP_PATIENCE = 5  # Stop if validation loss doesn't improve for 5 epochs
+    MIN_EPOCHS = 50  # Minimum number of epochs before early stopping is considered
+
+    trainer(DATASET_PATH, CHECKPOINT_DIR, LEARNING_PATH, BATCH_SIZE, EPOCHS, EARLY_STOP_PATIENCE, MIN_EPOCHS)

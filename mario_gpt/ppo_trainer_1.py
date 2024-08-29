@@ -3,14 +3,14 @@ from torch.optim import AdamW
 import torch.nn.functional as F
 import logging
 
+from tqdm import tqdm
 from mario_gpt import MarioLM, SampleOutput
 from mario_gpt import ValueHead
 from mario_gpt import PreferenceModel
-from mario_gpt.checkpoint_manager import load_model
+from mario_gpt.checkpoint_manager import load_model, save_checkpoint, load_checkpoint
 
-LOG_FILE_PATH = '../logs/ppo_training_log.log'
-# Configure logging
-logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+global LOGGER
+
 
 class PPOTrainer:
     def __init__(self, frozen_lm, finetune_lm, preference_model, checkpoint_dir, beta=0.01, clip_ratio=0.2,
@@ -22,7 +22,7 @@ class PPOTrainer:
         self.clip_ratio = clip_ratio
         self.optimizer = AdamW(self.finetune_mario_lm.lm.parameters(), lr=learning_rate)
         self.checkpoint_dir = checkpoint_dir
-        self.value_head = ValueHead(self.finetune_mario_lm.lm.config.hidden_size)
+        self.value_head = ValueHead(self.finetune_mario_lm.lm.config.hidden_size).to(self.finetune_mario_lm.lm.device)
 
     def compute_kl_divergence(self, current_probs, initial_probs):
         p = torch.clamp(current_probs, min=1e-10, max=1.0)
@@ -34,7 +34,6 @@ class PPOTrainer:
         current_probs = F.softmax(current_logits, dim=-1)
         initial_probs = F.softmax(initial_logits, dim=-1)
         kl_div = self.compute_kl_divergence(current_probs, initial_probs)
-
         reward = preferability - self.beta * kl_div
         return reward
 
@@ -79,7 +78,7 @@ class PPOTrainer:
         return actor_loss + critic_loss
 
     def train_step(self, prompts):
-        logging.info(f"Starting train step with {len(prompts)} prompts.")
+        LOGGER.info(f"Starting train step with {len(prompts)} prompts.")
         # Generate level with the current policy
         response, response_tensor, _, _ = self.finetune_mario_lm.sample(
             prompts=prompts,
@@ -97,10 +96,10 @@ class PPOTrainer:
         all_values = []
 
         for i, prompt in enumerate(prompts):
-            logging.info(f"Processing prompt {i+1}/{len(prompts)}.")
-            # Prepare the prompt tensor for each individual prompt
-            prompt_tensor = self.frozen_mario_lm.prompter.output_hidden(prompt)
-            prompt_tensor = prompt_tensor.view(1, -1, self.frozen_mario_lm.lm.config.hidden_size)
+            LOGGER.info(f"Processing prompt {i + 1}/{len(prompts)}.")
+            # Prepare the prompt tensor for each individual prompts
+            tokenized_prompt = self.frozen_mario_lm.prompter.output_hidden(prompt)
+            prompt_tensor = tokenized_prompt.unsqueeze(1)
             prompt_tensor = prompt_tensor.to(self.frozen_mario_lm.device)
 
             # Forward pass through the initial model
@@ -118,10 +117,15 @@ class PPOTrainer:
         current_logits = torch.cat(all_current_logits, dim=0)
         values = torch.cat(all_values, dim=0)
 
-        preferability = 0.5
+        preference_scores = self.preference_model.predict(response_tensor.unsqueeze(1), prompt_tensor,
+                                                          self.finetune_mario_lm.device)
+        preference_weights = torch.tensor([0.5, 0.3, 0.2]).to(self.finetune_mario_lm.device)
+        # Multiply each score by its corresponding weight
+        weighted_score = preference_scores * preference_weights
+        preferability = weighted_score.sum(dim=1, keepdim=True)
+
         rewards = self.compute_reward(preferability, frozen_logits, current_logits, response_tensor)
         advantages = self.get_advantages(rewards, values)
-         #returns = advantages + values
 
         self.optimizer.zero_grad()
         old_logprobs = self.logprobs_from_logits(frozen_logits, response_tensor)
@@ -130,25 +134,27 @@ class PPOTrainer:
         loss.backward()
         self.optimizer.step()
 
-        logging.info(f"Train step completed with loss: {loss.item()}")
+        LOGGER.info(f"Train step completed with loss: {loss.item()}")
         return loss.item()
 
     def train(self, prompts, num_epochs=10, batch_size=5, save_freq=5):
-        logging.info("Starting training.")
+        start_epoch, loss = load_checkpoint(self.checkpoint_dir, self.finetune_mario_lm.lm, self.optimizer, )
+        LOGGER.info("Starting training.....")
         self.finetune_mario_lm.train()
-        for epoch in range(num_epochs):
+
+        for epoch in tqdm(range(start_epoch, num_epochs), desc='Training Epochs', unit='epoch'):
+            curr_epoch = epoch + 1
             total_loss = 0
-            logging.info(f"Starting epoch {epoch+1}/{num_epochs}.")
+            LOGGER.info(f"Starting epoch {curr_epoch}/{num_epochs}.")
             for i in range(0, len(prompts), batch_size):
                 batch_prompts = prompts[i:i + batch_size]
                 loss = self.train_step(batch_prompts)
                 total_loss += loss
 
-            logging.info(f"Epoch {epoch + 1}, Loss: {total_loss / len(prompts)}")
-
-            if (epoch + 1) % save_freq == 0:
-                self.save_checkpoint(epoch + 1)
-                logging.info(f"Model saved at epoch {epoch + 1}")
+            loss = total_loss / len(prompts)
+            LOGGER.info(f"Epoch {curr_epoch}, Loss: {loss}")
+            save_checkpoint(self.finetune_mario_lm.lm, self.optimizer, curr_epoch, loss, max_to_keep=5,
+                            checkpoint_dir=self.checkpoint_dir)
 
     def forward_pass(self, model, prompt_tensor, response_tensor):
         with torch.no_grad():
@@ -183,47 +189,70 @@ class PPOTrainer:
 
                 start_idx += step_size
 
-        self.value_head.to(self.finetune_mario_lm.device)
-        values = self.value_head(last_hidden_states)
-        values = values.squeeze(-1)
-
+        values = self.value_head(last_hidden_states).squeeze(-1)
         return logits, values
 
-    def convert_to_level_token(self, lst: list):
-        if not lst:
-            return ""
 
-        result = ""
-        list_length = len(lst) - 1
-        element_length = len(lst[0])
+def clip_by_value(x, tensor_min, tensor_max):
+    clipped = torch.max(torch.min(x, tensor_max), tensor_min)
+    return clipped
 
-        for i in range(element_length):
-            for j in range(list_length, -1, -1):
-                result += lst[j][i]
 
-        return result
+def masked_mean(values, mask, axis=None):
+    """Compute mean of tensor with a masked values."""
+    if axis is not None:
+        return (values * mask).sum(axis=axis) / mask.sum(axis=axis)
+    else:
+        return (values * mask).sum() / mask.sum()
 
-    def save_checkpoint(self, epoch):
-        model_save_path = f"{self.checkpoint_dir}/model_epoch_{epoch}.pt"
-        torch.save({
-            'model_state_dict': self.finetune_mario_lm.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'epoch': epoch,
-        }, model_save_path)
-        logging.info(f"Model checkpoint saved at {model_save_path}")
 
-def trainer(preference_model_path, mario_model_checkpoint_dir, training_prompts):
+def masked_var(values, mask, unbiased=True):
+    """Compute variance of tensor with masked values."""
+    mean = masked_mean(values, mask)
+    centered_values = values - mean
+    variance = masked_mean(centered_values**2, mask)
+    if unbiased:
+        bessel_correction = mask.sum() / (mask.sum() - 1)
+        variance = variance * bessel_correction
+    return variance
+
+
+def entropy_from_logits(logits):
+    """Calculate entropy from logits."""
+    pd = torch.nn.functional.softmax(logits, dim=-1)
+    entropy = torch.logsumexp(logits, axis=-1) - torch.sum(pd * logits, axis=-1)
+    return entropy
+
+
+def run_ppo_trainer(preference_model_path, mario_model_checkpoint_dir, training_prompts):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     initial_mario_lm = MarioLM().to(device)
     finetune_mario_lm = MarioLM().to(device)
     preference_model = PreferenceModel()
     preference_model.to(device)
     preference_model = load_model(preference_model, preference_model_path)
-    ppo_trainer = PPOTrainer(initial_mario_lm, finetune_mario_lm, preference_model, mario_model_checkpoint_dir, 0.01, 0.2)
-    ppo_trainer.train(['many pipes many enemies many blocks high elevation'], 10)
+    print(preference_model)
+    ppo_trainer = PPOTrainer(initial_mario_lm, finetune_mario_lm, preference_model, mario_model_checkpoint_dir, 0.01,
+                             0.2)
+    ppo_trainer.train(['many pipes many enemies many blocks high elevation',
+                       'many pipes many enemies many blocks low elevation'], 10)
+
 
 if __name__ == "__main__":
-    PREFERENCE_MODEL_PATH = ''
-    CHECKPOINT_DIR = ''
-    DATASET_PATH = ''
-    trainer(PREFERENCE_MODEL_PATH, CHECKPOINT_DIR, DATASET_PATH)
+    LOG_FILE_PATH = '../logs/ppo_training_log.log'
+    # Configure logging
+    logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    LOGGER = logging.getLogger('PPOTrainer')
+
+    PREFERENCE_MODEL_PATH = '../checkpoints/best_pm_v2/best_pmv2_checkpoint.pth'
+    CHECKPOINT_DIR = '../checkpoints/ppo'
+    DATASET_PATH = '../sampling/input_prompts.txt'
+
+    prompts = []
+
+    with open(DATASET_PATH, 'r') as file:
+        for line in file:
+            prompt = line.strip()
+            prompts.append(prompt)
+
+    run_ppo_trainer(PREFERENCE_MODEL_PATH, CHECKPOINT_DIR, prompts)

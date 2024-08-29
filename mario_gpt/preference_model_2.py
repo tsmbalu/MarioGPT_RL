@@ -6,6 +6,8 @@ import os
 import json
 import logging
 import shutil
+import math
+import matplotlib.pyplot as plt
 
 from tqdm import tqdm
 from datetime import datetime
@@ -18,9 +20,7 @@ from mario_gpt import MarioLM, SampleOutput
 
 PRETRAINED_MODEL_PATH = "shyamsn97/Mario-GPT2-700-context-length"
 
-LOG_FILE_PATH = '../logs/pmv2_training_log.log'
-# Configure logging
-logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+global LOGGER
 
 
 class PreferenceModel(nn.Module):
@@ -173,7 +173,7 @@ def save_model_checkpoint(model, optimizer, epoch, val_loss, checkpoint_path):
         'val_loss': val_loss
     }
     torch.save(checkpoint, checkpoint_path)
-    logging.info(f"Checkpoint saved at epoch {epoch}: {checkpoint_path}")
+    LOGGER.info(f"Checkpoint saved at epoch {epoch}: {checkpoint_path}")
 
 
 def load_metadata(meta_file_path):
@@ -193,7 +193,7 @@ def update_metadata(metadata, checkpoint_dir, checkpoint_name, epoch, val_loss):
             ckpt['epoch'] = epoch
             ckpt['val_loss'] = val_loss
             checkpoint_exists = True
-            logging.info(f"Metadata updated for existing checkpoint: {checkpoint_name}")
+            LOGGER.info(f"Metadata updated for existing checkpoint: {checkpoint_name}")
             break
 
     if not checkpoint_exists:
@@ -211,16 +211,18 @@ def update_metadata(metadata, checkpoint_dir, checkpoint_name, epoch, val_loss):
         dest_file = os.path.join(checkpoint_dir, bckpt_file_name)
         shutil.copy(src_file, dest_file)
 
-        old_best_file = os.path.join(checkpoint_dir, metadata['best_checkpoint']['name'])
-        if os.path.exists(old_best_file):
-            os.remove(old_best_file)
+        # Delete the old best checkpoint file
+        if metadata.get('best_checkpoint') is not None:
+            old_best_file = os.path.join(checkpoint_dir, metadata['best_checkpoint']['name'])
+            if os.path.exists(old_best_file):
+                os.remove(old_best_file)
 
         metadata['best_checkpoint'] = {
             'name': bckpt_file_name,
             'epoch': epoch,
             'val_loss': val_loss
         }
-        logging.info(f"New best checkpoint updated: {bckpt_file_name}")
+        LOGGER.info(f"New best checkpoint updated: {bckpt_file_name}")
 
 
 def manage_checkpoints(metadata, max_to_keep, ckpt_dir):
@@ -230,16 +232,17 @@ def manage_checkpoints(metadata, max_to_keep, ckpt_dir):
         old_ckpt_path = os.path.join(ckpt_dir, old_checkpoint['name'])
         if os.path.exists(old_ckpt_path):
             os.remove(old_ckpt_path)
-            logging.info(f"Removed old checkpoint: {old_checkpoint['name']}")
+            LOGGER.info(f"Removed old checkpoint: {old_checkpoint['name']}")
 
 
 def save_metadata(metadata, meta_file_path):
     with open(meta_file_path, 'w') as meta_file:
         json.dump(metadata, meta_file, indent=4)
-        logging.info(f"Metadata saved/updated in {meta_file_path}")
+        LOGGER.info(f"Metadata saved/updated in {meta_file_path}")
 
 
-def save_checkpoint(model, optimizer, epoch, val_loss, max_to_keep=3, checkpoint_dir="../checkpoints/pm_v2/", prefix=None):
+def save_checkpoint(model, optimizer, epoch, val_loss, max_to_keep=3, checkpoint_dir="../checkpoints/pm_v2/",
+                    prefix=None):
     checkpoint_name = f"{prefix}checkpoint_epoch_{epoch}.pth"
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
 
@@ -259,7 +262,7 @@ def save_checkpoint(model, optimizer, epoch, val_loss, max_to_keep=3, checkpoint
     save_metadata(metadata, meta_file_path)
 
 
-def load_checkpoint(checkpoint_dir, model, optimizer):
+def load_checkpoint(checkpoint_dir, model, optimizer, option='latest'):
     meta_file_path = os.path.join(checkpoint_dir, 'checkpoint_meta.json')
 
     if os.path.exists(meta_file_path):
@@ -268,12 +271,15 @@ def load_checkpoint(checkpoint_dir, model, optimizer):
             metadata = json.load(meta_file)
 
         if not metadata['checkpoints']:
-            logging.info("No checkpoints listed in metadata, starting from scratch.")
+            LOGGER.info("No checkpoints listed in metadata, starting from scratch.")
             return 0, float('inf')
 
-        # Load the latest checkpoint based on the metadata
-        latest_checkpoint = metadata['checkpoints'][-1]
-        checkpoint_name = latest_checkpoint['name']
+        # Load the latest checkpoint or best checkpoint based on the option
+        if option == 'best':
+            selected_checkpoint = metadata['best_checkpoint']
+        else:
+            selected_checkpoint = metadata['checkpoints'][-1]
+        checkpoint_name = selected_checkpoint['name']
         checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
         checkpoint = torch.load(checkpoint_path)
 
@@ -285,7 +291,7 @@ def load_checkpoint(checkpoint_dir, model, optimizer):
         logging.info(f"Loaded checkpoint from epoch {ckpt_epoch}, resuming from epoch {ckpt_epoch+1}")
         return ckpt_epoch, ckpt_val_loss
     else:
-        logging.info("No checkpoint found, starting from scratch.")
+        LOGGER.info("No checkpoint found, starting from scratch.")
         return 0, float('inf')
 
 
@@ -313,11 +319,22 @@ def convert_to_level_token(levels: list):
     return level_list
 
 
+def tokenize_prompt(mario_lm, prompts: list, cache: dict) -> (list, dict):
+    tokenized_prompts = []
+    for prompt in prompts:
+        if prompt not in cache:
+            # If the prompt is not in the cache, process and store the result
+            cache[prompt] = mario_lm.prompter.output_hidden(prompt)
+        # Append the cached result to the list
+        tokenized_prompts.append(cache[prompt])
+    return tokenized_prompts, cache
+
+
 def prepare_dataset(df, test_size):
     # Split the dataset
     train_df, test_df = train_test_split(df, test_size=test_size, random_state=42, stratify=df[['prompt']])
-    logging.info(f'Train Shape: {train_df.shape}')
-    logging.info(f'Test Shape: {test_df.shape}')
+    LOGGER.info(f'Train Shape: {train_df.shape}')
+    LOGGER.info(f'Test Shape: {test_df.shape}')
     train_prompts = train_df['prompt'].astype(str).tolist()
     train_levels = train_df['level_file_path'].astype(str).tolist()
     train_levels_token = convert_to_level_token(train_levels)
@@ -329,8 +346,10 @@ def prepare_dataset(df, test_size):
     val_scores = test_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']].to_numpy()
 
     mario_lm = MarioLM()
-    tokenized_train_prompts = [mario_lm.prompter.output_hidden(prompt) for prompt in zip(train_prompts)]
-    tokenized_val_prompts = [mario_lm.prompter.output_hidden(prompt) for prompt in zip(val_prompts)]
+    prompt_cache = {}
+    tokenized_train_prompts, prompt_cache = tokenize_prompt(mario_lm, train_prompts, prompt_cache)
+    tokenized_val_prompts, prompt_cache = tokenize_prompt(mario_lm, val_prompts, prompt_cache)
+
     tokenized_train_levels = [
         mario_lm.tokenizer.encode(lvl_token, return_tensors="pt", truncation=True, max_length=1400) for lvl_token in
         train_levels_token]
@@ -345,8 +364,8 @@ def prepare_dataset(df, test_size):
     return train_dataset, val_dataset
 
 
-def trainer(data_set: str, checkpoint_dir: str, learning_rate: float, batch_size: int, epochs: int,
-            early_stop_patience: int, min_epochs: int):
+def run_preference_trainer(data_set: str, checkpoint_dir: str, learning_rate: float, batch_size: int, epochs: int,
+                           early_stop_patience: int, min_epochs: int):
     global device
     # Initialize model
     model = PreferenceModel()
@@ -361,22 +380,22 @@ def trainer(data_set: str, checkpoint_dir: str, learning_rate: float, batch_size
     criterion = nn.MSELoss()
     # Log the start of training
     start_time = datetime.now()
-    logging.info(f"Training started at {start_time}")
+    LOGGER.info(f"Training started at {start_time}")
     # Load the latest checkpoint if available
     start_epoch, best_val_loss = load_checkpoint(checkpoint_dir, model, optimizer)
     # Training loop
     epochs_no_improve = 0
     for epoch in range(start_epoch, epochs):
         curr_epoch = epoch + 1
-        logging.info(f"Epoch {curr_epoch}/{epochs}")
+        LOGGER.info(f"Epoch {curr_epoch}/{epochs}")
         train_loss = train(model, train_dataloader, optimizer, criterion, device)
         val_loss, val_mse, val_mae, r2score = validate(model, val_dataloader, criterion, device)
 
-        logging.info(f"Training Loss: {train_loss:.4f}")
-        logging.info(f"Validation Loss: {val_loss:.4f}")
-        logging.info(f"Validation MSE: {val_mse:.4f}")
-        logging.info(f"Validation MAE: {val_mae:.4f}")
-        logging.info(f"Validation R2 Score: {r2score:.4f}")
+        LOGGER.info(f"Training Loss: {train_loss:.4f}")
+        LOGGER.info(f"Validation Loss: {val_loss:.4f}")
+        LOGGER.info(f"Validation MSE: {val_mse:.4f}")
+        LOGGER.info(f"Validation MAE: {val_mae:.4f}")
+        LOGGER.info(f"Validation R2 Score: {r2score:.4f}")
 
         save_checkpoint(model, optimizer, curr_epoch, val_loss, checkpoint_dir=checkpoint_dir, prefix='pmv2_')
         # Check for improvement
@@ -385,26 +404,79 @@ def trainer(data_set: str, checkpoint_dir: str, learning_rate: float, batch_size
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
-            logging.info(f'No improvement in loss for the last {epochs_no_improve} epochs')
+            LOGGER.info(f'No improvement in loss for the last {epochs_no_improve} epochs')
 
         # Early stopping: only consider stopping after `min_epochs` have passed
         if curr_epoch >= min_epochs and epochs_no_improve >= early_stop_patience:
-            logging.info(f"Early stopping at epoch {curr_epoch}")
+            LOGGER.info(f"Early stopping at epoch {curr_epoch}")
             break
     # Log the end of training
     end_time = datetime.now()
-    logging.info(f"Training ended at {end_time}")
-    logging.info(f"Total training time: {end_time - start_time}")
+    LOGGER.info(f"Training ended at {end_time}")
+    LOGGER.info(f"Total training time: {end_time - start_time}")
+
+
+def find_lr(dataset_path, batch_size, beta=0.98):
+    df = pd.read_csv(dataset_path, sep=",")
+    train_dataset, val_dataset = prepare_dataset(df, test_size=0.25)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
+    # Define learning rate increments
+    increments = [
+        0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1
+    ]
+    results = []
+    losses = []
+    log_lrs = []
+
+    for lr in increments:
+        model = PreferenceModel()
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+        criterion = nn.MSELoss()
+        optimizer.param_groups[0]['lr'] = lr
+
+        loss = train(model, train_dataloader, optimizer, criterion, device)
+
+        log_lrs.append(lr)  # Use the initial learning rate for the log scale
+        losses.append(loss)
+
+    # Save the plot
+    plt.plot(log_lrs, losses)
+    plt.xlabel('Learning Rate (log scale)')
+    plt.ylabel('Average Loss')
+    plt.title(f'Learning Rate Finder')
+    plt.savefig('../logs/lr_plot.png')
+    plt.close()
+    LOGGER.info(f"Plot saved at ../logs/lr_plot.png")
+
+    results.extend(zip(log_lrs, losses))
+    # Save results to CSV
+    df_results = pd.DataFrame(results, columns=['Log Learning Rate', 'Average Loss'])
+    csv_path = '../logs/lr_results.csv'
+    df_results.to_csv(csv_path, index=False)
+    LOGGER.info(f"Results saved to {csv_path}")
+
+    return results
 
 
 if __name__ == "__main__":
+    LOG_FILE_PATH = '../logs/pmv2_training_log.log'
+    # Configure logging
+    logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    LOGGER = logging.getLogger('PreferenceModel')
+
     DATASET_PATH = "../sampling/sampling_score.csv"
     CHECKPOINT_DIR = "../checkpoints/pm_v2/"
     # Hyperparameters
     BATCH_SIZE = 4
-    LEARNING_PATH = 1e-5
+    # LEARNING_PATH = 1e-5
+    LEARNING_PATH = 0.0005
     EPOCHS = 500
-    EARLY_STOP_PATIENCE = 5  # Stop if validation loss doesn't improve for 5 epochs
+    EARLY_STOP_PATIENCE = 10  # Stop if validation loss doesn't improve for 5 epochs
     MIN_EPOCHS = 50  # Minimum number of epochs before early stopping is considered
 
-    trainer(DATASET_PATH, CHECKPOINT_DIR, LEARNING_PATH, BATCH_SIZE, EPOCHS, EARLY_STOP_PATIENCE, MIN_EPOCHS)
+    # find_lr(DATASET_PATH, BATCH_SIZE)
+    run_preference_trainer(DATASET_PATH, CHECKPOINT_DIR, LEARNING_PATH, BATCH_SIZE, EPOCHS, EARLY_STOP_PATIENCE,
+                           MIN_EPOCHS)

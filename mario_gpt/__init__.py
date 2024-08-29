@@ -4,6 +4,7 @@ from mario_gpt.prompter import Prompter
 from mario_gpt.sampler import GPTSampler, SampleOutput
 from mario_gpt.trainer import MarioGPTTrainer, TrainingConfig
 from mario_gpt.value_head import ValueHead
+from mario_gpt.preference_model_2 import PreferenceModel
 
 __all__ = [
     "Prompter",
@@ -16,4 +17,5 @@ __all__ = [
     "TrainingConfig",
     "MarioGPTTrainer",
     "ValueHead",
+    "PreferenceModel",
 ]

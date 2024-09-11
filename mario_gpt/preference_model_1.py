@@ -5,23 +5,27 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import pandas as pd
 import torch
-
-from sklearn.metrics import accuracy_score
-
+import logging
+from datetime import datetime
 from mario_gpt import MarioLM, SampleOutput
 
 PRETRAINED_MODEL_PATH = "shyamsn97/Mario-GPT2-700-context-length"
 MODEL_SAVE_PATH = '../checkpoints/pm'
 SAVE_FREQ = 5
 
+# Logging configuration
+LOG_FILE_PATH = '../logs/pm_training_log.log'
+logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO,
+                    format='%(asctime)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
 
 class PreferenceModel(keras.Model):
     def __init__(self, output_dim=3, name='preference_model'):
         super(PreferenceModel, self).__init__(name=name)
-        self.dense1 = keras.layers.Dense(2168, activation='relu',
+        self.dense1 = keras.layers.Dense(2048, activation='relu',
                                          kernel_regularizer=keras.regularizers.l2(0.01))
         self.dropout1 = keras.layers.Dropout(0.5)
-        self.dense2 = keras.layers.Dense(1084, activation='relu',
+        self.dense2 = keras.layers.Dense(1024, activation='relu',
                                          kernel_regularizer=keras.regularizers.l2(0.01))
         self.dense3 = keras.layers.Dense(output_dim, activation='linear')  # Use linear activation for regression
         self.optimizer = keras.optimizers.Adam(learning_rate=1e-5)
@@ -58,6 +62,7 @@ class PreferenceModel(keras.Model):
 
     def fit(self, train_dataset, val_dataset, num_epochs=10, steps_per_epoch=None, validation_steps=None):
         for epoch in range(num_epochs):
+            logging.info(f"Starting epoch {epoch + 1}/{num_epochs}")
             print(f"Epoch {epoch + 1}/{num_epochs}")
 
             # Training loop
@@ -71,12 +76,15 @@ class PreferenceModel(keras.Model):
 
             val_loss, mse, mae, val_metric = self.evaluate(val_dataset, validation_steps)
 
-            print(
-                f"Train Loss: {train_loss / steps_per_epoch}, Validation Loss: {val_loss}")
+            logging.info(f"Train Loss: {train_loss / steps_per_epoch}, Validation Loss: {val_loss}")
+            logging.info(f"Validation MSE: {mse}, Validation MAE: {mae}, Validation R2 Score: {val_metric}")
+
+            print(f"Train Loss: {train_loss / steps_per_epoch}, Validation Loss: {val_loss}")
             print(f"Validation MSE: {mse}, Validation MAE: {mae}, Validation R2 Score: {val_metric}")
 
             if (epoch + 1) % SAVE_FREQ == 0:
                 self.checkpoint_manager.save()
+                logging.info(f"Model saved at epoch {epoch + 1}")
                 print(f"Model saved at epoch {epoch + 1}")
 
     def evaluate(self, dataset, steps=None):
@@ -87,7 +95,6 @@ class PreferenceModel(keras.Model):
         :return: tuple of (mse, mae, accuracy)
         """
         val_loss = 0
-        val_metric = 0
         all_predictions = []
         all_true_scores = []
         for step, (inputs, scores) in enumerate(dataset):
@@ -96,15 +103,15 @@ class PreferenceModel(keras.Model):
             data = (inputs, scores)
             logs = self.test_step(data)
             val_loss += logs['loss'].numpy()
-            val_metric += logs['r2_score']
             all_predictions.extend(logs['predictions'].numpy().flatten())
-            all_true_scores.extend(data[1].numpy().flatten())
+            all_true_scores.extend(scores.numpy().flatten())
 
         mse = mean_squared_error(all_true_scores, all_predictions)
         mae = mean_absolute_error(all_true_scores, all_predictions)
-        val_metric /= steps
-        val_loss /= steps
-        return val_loss, mse, mae, val_metric
+        r2 = r2_score(all_true_scores, all_predictions)
+
+        val_loss /= (steps if steps else 1)
+        return val_loss, mse, mae, r2
 
     def predict(self, dataset):
         """
@@ -184,38 +191,6 @@ def prepare_dataset(df, test_size, batch_size=32):
     val_levels_token = convert_to_level_token(val_levels)
     val_scores = test_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']].to_numpy()
 
-    '''
-    # Concatenate the prompt and response
-    train_input_texts = [f"{prompt} {response}" for prompt, response in zip(train_prompts, train_levels_txt)]
-    val_input_texts = [f"{prompt} {response}" for prompt, response in zip(val_prompts, val_levels_txt)]
-
-    
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-
-    # Assuming train_input_texts and val_input_texts are lists of strings
-    train_chunks = [split_into_chunks(text, max_length=512) for text in train_input_texts]
-    val_chunks = [split_into_chunks(text, max_length=512) for text in val_input_texts]
-
-    # Flatten the lists of chunks
-    train_input_texts = [chunk for chunks in train_chunks for chunk in chunks]
-    val_input_texts = [chunk for chunks in val_chunks for chunk in chunks]
-
-    train_encodings = tokenizer(train_input_texts, truncation=False, padding=True, max_length=512)
-    val_encodings = tokenizer(val_input_texts, truncation=False, padding=True, max_length=512)
-
-    train_input_ids = tf.convert_to_tensor(train_encodings['input_ids'], dtype=tf.int32)
-    val_input_ids = tf.convert_to_tensor(val_encodings['input_ids'], dtype=tf.int32)
-    train_scores_tf = tf.convert_to_tensor(
-        np.repeat(train_scores, [len(split_into_chunks(txt, max_length=512)) for txt in train_input_texts], axis=0),
-        dtype=tf.float32)
-    val_scores_tf = tf.convert_to_tensor(
-        np.repeat(val_scores, [len(split_into_chunks(txt, max_length=512)) for txt in val_input_texts], axis=0),
-        dtype=tf.float32)
-
-    train_dataset = tf.data.Dataset.from_tensor_slices((train_input_ids, train_scores_tf)).batch(2)
-    val_dataset = tf.data.Dataset.from_tensor_slices((val_input_ids, val_scores_tf)).batch(2)
-    '''
     mario_lm = MarioLM()
     tokenized_train_prompts = [mario_lm.prompter.output_hidden(prompt) for prompt in zip(train_prompts)]
     tokenized_val_prompts = [mario_lm.prompter.output_hidden(prompt) for prompt in zip(val_prompts)]
@@ -233,11 +208,6 @@ def prepare_dataset(df, test_size, batch_size=32):
 
     train_scores_tf = tf.convert_to_tensor(train_scores)
     val_scores_tf = tf.convert_to_tensor(val_scores)
-
-    '''
-    train_dataset = (train_features_tf, train_scores_tf)
-    val_dataset = (val_features_tf, val_scores_tf)
-    '''
 
     # Create TensorFlow datasets, batch them, and set them to repeat
     train_dataset = tf.data.Dataset.from_tensor_slices((train_features_tf, train_scores_tf)).batch(batch_size).repeat()
@@ -260,16 +230,28 @@ def trainer(dataset_path, epochs, test_size, batch_size):
     preference_model.fit(train_dataset, val_dataset, num_epochs=1, steps_per_epoch=steps_per_epoch,
                          validation_steps=validation_steps)
     preference_model.load_model()
-    preference_model.summary()
-    preference_model.print_weights()
+
+    # Log the start of training
+    start_time = datetime.now()
+    logging.info(f"Training started at {start_time}")
+    print(f"Training started at {start_time}")
+
     preference_model.fit(train_dataset, val_dataset, num_epochs=epochs, steps_per_epoch=steps_per_epoch,
                          validation_steps=validation_steps)
+
+    # Log the end of training
+    end_time = datetime.now()
+    logging.info(f"Training ended at {end_time}")
+    logging.info(f"Total training time: {end_time - start_time}")
+    print(f"Training ended at {end_time}")
+    print(f"Total training time: {end_time - start_time}")
+
     preference_model.print_weights()
 
 
 if __name__ == "__main__":
     DATASET_PATH = "../sampling/sampling_score.csv"
-    NUM_EPOCHS = 100
+    NUM_EPOCHS = 500
     TEST_SIZE = 0.25
     BATCH_SIZE = 32
 

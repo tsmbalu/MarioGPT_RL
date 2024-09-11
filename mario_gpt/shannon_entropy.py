@@ -61,11 +61,14 @@ def rate_novelty_of_level(level_text, tiles_to_consider):
     # Calculate segment entropies and penalties
     segment_entropies, concentration_penalties = segment_entropy(filtered_level_text)
 
-    # Average segment entropy
-    avg_segment_entropy = sum(segment_entropies) / len(segment_entropies)
-
-    # Average concentration penalty
-    avg_concentration_penalty = sum(concentration_penalties) / len(concentration_penalties)
+    if len(segment_entropies) == 0:
+        avg_segment_entropy = 0
+        avg_concentration_penalty = 0
+    else:
+        # Average segment entropy
+        avg_segment_entropy = sum(segment_entropies) / len(segment_entropies)
+        # Average concentration penalty
+        avg_concentration_penalty = sum(concentration_penalties) / len(concentration_penalties)
 
     print(overall_entropy)
 
@@ -93,7 +96,7 @@ def normalize_score(score):
 
 import csv
 if __name__ == "__main__":
-    input_csv_path = '../sampling/sampling_score.csv'
+    input_csv_path = '../sampling/sampling_1.csv'
     with open(input_csv_path, mode='r', newline='') as file:
         reader = csv.reader(file)
         rows = list(reader)
@@ -108,7 +111,7 @@ if __name__ == "__main__":
             row.append(str(novelty_score))
             row.append(normalize_novelty_score)
 
-    output_csv_path = '../sampling/sampling_score_1.csv'
+    output_csv_path = '../sampling/sampling_1_score.csv'
     # Write the updated content back to a new CSV file
     with open(output_csv_path, mode='w', newline='') as file:
         writer = csv.writer(file)

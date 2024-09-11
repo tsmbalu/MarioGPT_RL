@@ -34,7 +34,7 @@ def load_metadata(meta_file_path):
         return {'checkpoints': [], 'best_checkpoint': None}
 
 
-def update_metadata(metadata, checkpoint_dir, checkpoint_name, epoch, val_loss):
+def update_metadata(metadata, checkpoint_dir, checkpoint_name, epoch, val_loss, is_current_best=False):
     checkpoint_exists = False
 
     # Check if the checkpoint already exists in metadata
@@ -55,7 +55,7 @@ def update_metadata(metadata, checkpoint_dir, checkpoint_name, epoch, val_loss):
         })
 
     # Update the best checkpoint if needed
-    if metadata.get('best_checkpoint') is None or val_loss < metadata['best_checkpoint']['val_loss']:
+    if metadata.get('best_checkpoint') is None or is_current_best:
         bckpt_file_name = f'best_{checkpoint_name}'
         src_file = os.path.join(checkpoint_dir, checkpoint_name)
         dest_file = os.path.join(checkpoint_dir, bckpt_file_name)
@@ -91,7 +91,7 @@ def save_metadata(metadata, meta_file_path):
         logger.info(f"Metadata saved/updated in {meta_file_path}")
 
 
-def save_checkpoint(model, optimizer, epoch, val_loss, max_to_keep=3, checkpoint_dir=None, prefix=''):
+def save_checkpoint(model, optimizer, epoch, val_loss, max_to_keep=3, checkpoint_dir=None, prefix='', best_model_metric='low'):
     checkpoint_name = f"{prefix}checkpoint_epoch_{epoch}.pth"
     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
 
@@ -102,8 +102,14 @@ def save_checkpoint(model, optimizer, epoch, val_loss, max_to_keep=3, checkpoint
     meta_file_path = os.path.join(checkpoint_dir, 'checkpoint_meta.json')
     metadata = load_metadata(meta_file_path)
 
+    is_best_model = False
+    if metadata.get('best_checkpoint') is not None:
+        if best_model_metric == 'low':
+            is_best_model = val_loss < metadata['best_checkpoint']['val_loss']
+        else:
+            is_best_model = val_loss > metadata['best_checkpoint']['val_loss']
     # Update or add checkpoint metadata
-    update_metadata(metadata, checkpoint_dir, checkpoint_name, epoch, val_loss)
+    update_metadata(metadata, checkpoint_dir, checkpoint_name, epoch, val_loss, is_best_model)
 
     manage_checkpoints(metadata, max_to_keep, checkpoint_dir)
 
@@ -126,7 +132,7 @@ def load_checkpoint_by_path(model, optimizer, checkpoint_path):
 
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    ckpt_epoch = checkpoint['epoch'] + 1
+    ckpt_epoch = checkpoint['epoch']
     ckpt_val_loss = checkpoint['val_loss']
 
     logger.info(f"Loaded checkpoint from epoch {ckpt_epoch}, resuming from epoch {ckpt_epoch + 1}")

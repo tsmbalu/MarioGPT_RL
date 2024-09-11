@@ -54,7 +54,7 @@ def normalize_score(score):
 import csv
 
 if __name__ == "__main__":
-    input_csv_path = '../sampling/sampling_score.csv'
+    input_csv_path = '../sampling/sampling_1.csv'
     with open(input_csv_path, mode='r', newline='') as file:
         reader = csv.reader(file)
         rows = list(reader)
@@ -68,7 +68,7 @@ if __name__ == "__main__":
             row.append(str(aesthetic_score))
             row.append(str(normalize_aesthetic_score))
 
-    output_csv_path = '../sampling/sampling_score_1.csv'
+    output_csv_path = '../sampling/sampling_1_score.csv'
     # Write the updated content back to a new CSV file
     with open(output_csv_path, mode='w', newline='') as file:
         writer = csv.writer(file)

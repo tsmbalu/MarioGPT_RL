@@ -2,14 +2,18 @@ import torch
 import torch.nn as nn
 import numpy as np
 import pandas as pd
+import os
+import json
 import logging
+import shutil
+import math
 import matplotlib.pyplot as plt
 
 from tqdm import tqdm
 from datetime import datetime
 from transformers import AutoModelForCausalLM
 from torch.utils.data import DataLoader, Dataset
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score
 from sklearn.model_selection import train_test_split
 
 from mario_gpt import MarioLM, SampleOutput
@@ -26,7 +30,7 @@ class PreferenceModel(nn.Module):
         self.mariolm = AutoModelForCausalLM.from_pretrained(model_name, **{"add_cross_attention": True,
                                                                            "output_hidden_states": True})
         self.chunk_size = context_len
-        self.regression = nn.Sequential(
+        self.classification = nn.Sequential(
             nn.Linear(self.mariolm.config.hidden_size, 512),
             nn.LayerNorm(512),
             nn.ReLU(),
@@ -34,7 +38,8 @@ class PreferenceModel(nn.Module):
             nn.Linear(512, 3)
         )
         self.dropout = nn.Dropout(0.1)
-        self.pooling = nn.AdaptiveAvgPool1d(1)
+        self.pooling = nn.AdaptiveMaxPool1d(1)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, input_ids, encoder_hidden_states):
         seq_len = input_ids.shape[-1]
@@ -57,15 +62,16 @@ class PreferenceModel(nn.Module):
             hidden_states = outputs.hidden_states[-1]
             all_hidden_states.append(hidden_states)
 
-        # Concatenate all hidden states
+            # Concatenate all hidden states
         hidden_states = torch.cat(all_hidden_states, dim=1)
 
         # Aggregate hidden states for the entire sequence
         sequence_representation = hidden_states.mean(dim=1)
-        logits = self.regression(self.dropout(sequence_representation))
+        logits = self.classification(self.dropout(sequence_representation))
         logits = logits.permute(0, 2, 1)  # (batch_size, 3, full_seq_len)
         pooled_logits = self.pooling(logits)  # (batch_size, 3, 1)
-        preference_score = pooled_logits.squeeze(-1)
+        probabilities = pooled_logits.squeeze(-1)
+        preference_score = self.sigmoid(probabilities)
         return preference_score
 
     def predict(self, input_ids, encoder_hidden_states, device=None):
@@ -82,10 +88,11 @@ class PreferenceModel(nn.Module):
             input_ids = input_ids.to(device)
             encoder_hidden_states = encoder_hidden_states.to(device)
 
-        self.eval()  # Set the model to evaluation mode
-        with torch.no_grad():  # Disable gradient computation
-            preference_scores = self(input_ids, encoder_hidden_states)
-        return preference_scores
+        self.eval()
+        with torch.no_grad():
+            probabilities = self(input_ids, encoder_hidden_states)
+            predictions = (probabilities > 0.8).int()
+        return predictions
 
 
 class PreferenceDataset(Dataset):
@@ -148,7 +155,8 @@ def validate(model, dataloader, criterion, device):
             loss = criterion(outputs, scores)
             running_loss += loss.item() * input_ids.size(0)
 
-            all_preds.append(outputs.cpu().numpy())
+            preds = (outputs > 0.8).int()
+            all_preds.append(preds.cpu().numpy())
             all_labels.append(scores.cpu().numpy())
 
     epoch_loss = running_loss / len(dataloader.dataset)
@@ -156,8 +164,8 @@ def validate(model, dataloader, criterion, device):
     all_labels = np.concatenate(all_labels, axis=0)
     mse = mean_squared_error(all_labels, all_preds)
     mae = mean_absolute_error(all_labels, all_preds)
-    r2score = r2_score(all_labels, all_preds)
-    return epoch_loss, mse, mae, r2score
+    accuracy = accuracy_score(all_labels, all_preds)
+    return epoch_loss, mse, mae, accuracy
 
 
 def convert_to_level_token(levels: list):
@@ -203,12 +211,12 @@ def prepare_dataset(df, test_size):
     train_prompts = train_df['prompt'].astype(str).tolist()
     train_levels = train_df['level_file_path'].astype(str).tolist()
     train_levels_token = convert_to_level_token(train_levels)
-    train_scores = train_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']].to_numpy()
+    train_scores = np.round(train_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']]).astype(int).to_numpy()
 
     val_prompts = test_df['prompt'].astype(str).tolist()
     val_levels = test_df['level_file_path'].astype(str).tolist()
     val_levels_token = convert_to_level_token(val_levels)
-    val_scores = test_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']].to_numpy()
+    val_scores = np.round(test_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']]).astype(int).to_numpy()
 
     mario_lm = MarioLM()
     prompt_cache = {}
@@ -241,9 +249,8 @@ def run_preference_trainer(data_set: str, checkpoint_dir: str, learning_rate: fl
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
     # Define optimizer and loss function
-    # optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    optimizer = torch.optim.AdamW(model.regression.parameters(), lr = learning_rate)
-    criterion = nn.MSELoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    criterion = nn.BCEWithLogitsLoss()
     # Log the start of training
     start_time = datetime.now()
     LOGGER.info(f"Training started at {start_time}")
@@ -255,13 +262,13 @@ def run_preference_trainer(data_set: str, checkpoint_dir: str, learning_rate: fl
         curr_epoch = epoch + 1
         LOGGER.info(f"Epoch {curr_epoch}/{epochs}")
         train_loss = train(model, train_dataloader, optimizer, criterion, device)
-        val_loss, val_mse, val_mae, r2score = validate(model, val_dataloader, criterion, device)
+        val_loss, val_mse, val_mae, accuracy = validate(model, val_dataloader, criterion, device)
 
         LOGGER.info(f"Training Loss: {train_loss:.4f}")
         LOGGER.info(f"Validation Loss: {val_loss:.4f}")
         LOGGER.info(f"Validation MSE: {val_mse:.4f}")
         LOGGER.info(f"Validation MAE: {val_mae:.4f}")
-        LOGGER.info(f"Validation R2 Score: {r2score:.4f}")
+        LOGGER.info(f"Validation Accuracy Score: {accuracy:.4f}")
 
         save_checkpoint(model, optimizer, curr_epoch, val_loss, checkpoint_dir=checkpoint_dir, prefix='pmv2_')
         # Check for improvement
@@ -328,13 +335,13 @@ def find_lr(dataset_path, batch_size, beta=0.98):
 
 
 if __name__ == "__main__":
-    LOG_FILE_PATH = '../logs/pmv2_training_log.log'
+    LOG_FILE_PATH = '../logs/pmv3_training_log.log'
     # Configure logging
     logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     LOGGER = logging.getLogger('PreferenceModel')
 
     DATASET_PATH = "../sampling/sampling_score.csv"
-    CHECKPOINT_DIR = "../checkpoints/pm_v2/"
+    CHECKPOINT_DIR = "../checkpoints/pm_v3/"
     # Hyperparameters
     BATCH_SIZE = 4
     # LEARNING_PATH = 1e-5

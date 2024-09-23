@@ -249,7 +249,7 @@ def run_preference_trainer(data_set: str, checkpoint_dir: str, learning_rate: fl
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
     # Define optimizer and loss function
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(model.classification.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
     # Log the start of training
     start_time = datetime.now()
@@ -344,12 +344,12 @@ if __name__ == "__main__":
     CHECKPOINT_DIR = "../checkpoints/pm_v3/"
     # Hyperparameters
     BATCH_SIZE = 4
-    # LEARNING_PATH = 1e-5
-    LEARNING_PATH = 0.0005
+    # LEARNING_RATE = 1e-5
+    LEARNING_RATE = 0.0005
     EPOCHS = 500
     EARLY_STOP_PATIENCE = 10  # Stop if validation loss doesn't improve for 5 epochs
     MIN_EPOCHS = 50  # Minimum number of epochs before early stopping is considered
 
     # find_lr(DATASET_PATH, BATCH_SIZE)
-    run_preference_trainer(DATASET_PATH, CHECKPOINT_DIR, LEARNING_PATH, BATCH_SIZE, EPOCHS, EARLY_STOP_PATIENCE,
+    run_preference_trainer(DATASET_PATH, CHECKPOINT_DIR, LEARNING_RATE, BATCH_SIZE, EPOCHS, EARLY_STOP_PATIENCE,
                            MIN_EPOCHS)

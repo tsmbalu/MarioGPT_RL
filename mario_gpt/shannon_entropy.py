@@ -2,6 +2,7 @@ from mario_gpt import SampleOutput
 
 from collections import Counter
 import numpy as np
+import csv
 
 
 def filter_tiles(level_text, tiles):
@@ -94,7 +95,7 @@ def normalize_score(score):
     else:
         return 0
 
-import csv
+
 if __name__ == "__main__":
     input_csv_path = '../sampling/sampling_1.csv'
     with open(input_csv_path, mode='r', newline='') as file:

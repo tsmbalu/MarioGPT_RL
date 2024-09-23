@@ -6,8 +6,8 @@ import logging
 from tqdm import tqdm
 from mario_gpt import MarioLM, SampleOutput
 from mario_gpt import ValueHead
-from mario_gpt import PreferenceModel
-from mario_gpt.checkpoint_manager import load_model, save_checkpoint, load_checkpoint
+from preference_model_4 import PreferenceModel
+from checkpoint_manager import load_model, save_checkpoint, load_checkpoint
 from playability_measure import measure_playability, get_a_star_response, normalize_playability_score
 from shannon_entropy import rate_novelty_of_level, normalize_score as vnormalize_score
 from aesthetic_evaluator import evaluate_aesthetic, normalize_score as anormalize_score
@@ -139,6 +139,8 @@ class PPOTrainer:
             all_current_logits.append(current_logits)
             all_values.append(values)
 
+            '''
+            # Compute the scores for novelty, playability and aesthetic using the evaluator function 
             level_txt = "\n".join(response[i].level)
             tiles_to_consider = '?SQ[]E'
             v_score = rate_novelty_of_level(level_txt, tiles_to_consider)
@@ -155,16 +157,16 @@ class PPOTrainer:
                 preference_scores = pref_score
             else:
                 preference_scores = torch.cat((preference_scores, pref_score), dim=0)
+        '''
 
         # Combine all logits and values into batch tensors
         frozen_logits = torch.cat(all_frozen_logits, dim=0)
         current_logits = torch.cat(all_current_logits, dim=0)
         values = torch.cat(all_values, dim=0)
 
-        '''
         preference_scores = self.preference_model.predict(response_tensor.unsqueeze(1), prompt_tensor,
                                                           self.finetune_mario_lm.device)
-                                                          '''
+
         preference_scores = preference_scores.to(self.finetune_mario_lm.device)
         preference_weights = torch.tensor([0.2, 0.6, 0.2]).to(self.finetune_mario_lm.device)
         # Multiply each score by its corresponding weight
@@ -190,11 +192,14 @@ class PPOTrainer:
         LOGGER.info(f"Train step completed with loss: {loss.item()}")
         return loss.item(), total_reward
 
-    def train(self, prompts, num_epochs=10, batch_size=4):
-        start_epoch, loss = load_checkpoint(self.checkpoint_dir, self.finetune_mario_lm.lm, self.optimizer, )
+    def train(self, prompts, num_epochs=10, batch_size=4, save_freq=5):
+        start_epoch, reward = load_checkpoint(self.checkpoint_dir, self.finetune_mario_lm.lm, self.optimizer)
         LOGGER.info("Starting training.....")
         self.finetune_mario_lm.train()
-        total_reward = 0
+        if reward == float('inf'):
+            total_reward = 0
+        else:
+            total_reward = reward
 
         for epoch in tqdm(range(start_epoch, num_epochs), desc='Training Epochs', unit='epoch'):
             curr_epoch = epoch + 1
@@ -209,8 +214,10 @@ class PPOTrainer:
             loss = total_loss / len(prompts)
             reward = total_reward / len(prompts)
             LOGGER.info(f"Epoch {curr_epoch}, Loss: {loss}: Reward: {reward}")
-            save_checkpoint(self.finetune_mario_lm.lm, self.optimizer, curr_epoch, loss, max_to_keep=5,
-                            checkpoint_dir=self.checkpoint_dir)
+
+            if curr_epoch % save_freq == 0:
+                save_checkpoint(self.finetune_mario_lm.lm, self.optimizer, curr_epoch, reward, max_to_keep=5,
+                                checkpoint_dir=self.checkpoint_dir, best_model_metric='high')
 
 
 def compute_kl_divergence(current_probs, initial_probs):
@@ -236,20 +243,39 @@ def run_ppo_trainer(preference_model_path, mario_model_checkpoint_dir, training_
     preference_model = PreferenceModel()
     preference_model.to(device)
     preference_model = load_model(preference_model, preference_model_path)
+
     print(preference_model)
+    '''
+    for name, param in finetune_mario_lm.lm.named_parameters():
+        print(f"Name: {name}, Size: {param.size()}, Requires Grad: {param.requires_grad}")
+    '''
+
+    # Freeze all parameters
+    for param in initial_mario_lm.lm.parameters():
+        param.requires_grad = False
+
+    # Freeze all parameters
+    for param in finetune_mario_lm.lm.parameters():
+        param.requires_grad = False
+
+    # Fine-tune specific parameters (e.g., last 2 transformer layers and layer normalization)
+    for name, param in finetune_mario_lm.lm.named_parameters():
+        if 'h.4' in name or 'h.5' in name or 'ln_f' in name:
+            param.requires_grad = True
+
     ppo_trainer = PPOTrainer(initial_mario_lm, finetune_mario_lm, preference_model, mario_model_checkpoint_dir, 0.01,
                              0.2)
     ppo_trainer.train(training_prompts, num_of_epochs)
 
 
 if __name__ == "__main__":
-    LOG_FILE_PATH = '../logs/ppo_directscore_training_log.log'
+    LOG_FILE_PATH = '../logs/ppo_directscore_3_1_training_log.log'
     # Configure logging
     logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     LOGGER = logging.getLogger('PPOTrainer')
 
     PREFERENCE_MODEL_PATH = '../checkpoints/pm_v2/best_pmv2_checkpoint_epoch_51.pth'
-    CHECKPOINT_DIR = '../checkpoints/ppo_directscore'
+    CHECKPOINT_DIR = '../checkpoints/ppo_directscore_3'
     DATASET_PATH = '../sampling/input_prompts.txt'
 
     prompts = []

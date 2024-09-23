@@ -120,7 +120,7 @@ def save_checkpoint(model, optimizer, epoch, val_loss, max_to_keep=3, checkpoint
 def load_model(model, checkpoint_path):
     checkpoint = torch.load(checkpoint_path)
     model.load_state_dict(checkpoint['model_state_dict'])
-    ckpt_epoch = checkpoint['epoch'] + 1
+    ckpt_epoch = checkpoint['epoch']
     ckpt_val_loss = checkpoint['val_loss']
 
     logger.info(f"Loaded model from epoch {ckpt_epoch} with validation loss {ckpt_val_loss}")

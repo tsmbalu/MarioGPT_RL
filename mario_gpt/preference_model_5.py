@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 from tqdm import tqdm
 from datetime import datetime
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, get_linear_schedule_with_warmup
 from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
@@ -21,20 +21,25 @@ global LOGGER
 
 
 class PreferenceModel(nn.Module):
-    def __init__(self, model_name=PRETRAINED_MODEL_PATH, context_len=700):
+    def __init__(self, model_name=PRETRAINED_MODEL_PATH, context_len=700, lstm_hidden_size=256, num_lstm_layers=2):
         super(PreferenceModel, self).__init__()
-        self.mariolm = AutoModelForCausalLM.from_pretrained(model_name, **{"add_cross_attention": True,
-                                                                           "output_hidden_states": True})
+
+        self.mariolm = AutoModelForCausalLM.from_pretrained(model_name, output_hidden_states=True)
         self.chunk_size = context_len
+
+        self.lstm = nn.LSTM(input_size=self.mariolm.config.hidden_size,
+                            hidden_size=lstm_hidden_size,
+                            num_layers=num_lstm_layers,
+                            batch_first=True,
+                            bidirectional=True)
+
         self.regression = nn.Sequential(
-            nn.Linear(self.mariolm.config.hidden_size, 512),
+            nn.Linear(lstm_hidden_size * 2, 512),
             nn.LayerNorm(512),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(512, 3)
+            nn.Linear(512, 1)
         )
-        self.dropout = nn.Dropout(0.1)
-        self.pooling = nn.AdaptiveAvgPool1d(1)
 
     def forward(self, input_ids, encoder_hidden_states):
         seq_len = input_ids.shape[-1]
@@ -51,41 +56,18 @@ class PreferenceModel(nn.Module):
 
             outputs = self.mariolm(input_ids=chunk_input_ids,
                                    attention_mask=chunk_attention_mask,
-                                   encoder_hidden_states=encoder_hidden_states,
-                                   token_type_ids=None,
-                                   )
+                                   encoder_hidden_states=encoder_hidden_states)
+
             hidden_states = outputs.hidden_states[-1]
+            hidden_states = hidden_states.squeeze(1)
             all_hidden_states.append(hidden_states)
 
-        # Concatenate all hidden states
         hidden_states = torch.cat(all_hidden_states, dim=1)
+        lstm_output, (hn, cn) = self.lstm(hidden_states)
 
-        # Aggregate hidden states for the entire sequence
-        sequence_representation = hidden_states.mean(dim=1)
-        logits = self.regression(self.dropout(sequence_representation))
-        logits = logits.permute(0, 2, 1)  # (batch_size, 3, full_seq_len)
-        pooled_logits = self.pooling(logits)  # (batch_size, 3, 1)
-        preference_score = pooled_logits.squeeze(-1)
-        return preference_score
-
-    def predict(self, input_ids, encoder_hidden_states, device=None):
-        """
-        Predict preference scores for given input_ids and encoder_hidden_states.
-
-        :param input_ids: torch.Tensor, shape [batch_size, seq_len]
-        :param encoder_hidden_states: torch.Tensor, shape [batch_size, seq_len, hidden_size]
-        :param device: torch.device, device to run the prediction on
-        :return: torch.Tensor, shape [batch_size, 3]
-        """
-        if device:
-            self.to(device)
-            input_ids = input_ids.to(device)
-            encoder_hidden_states = encoder_hidden_states.to(device)
-
-        self.eval()  # Set the model to evaluation mode
-        with torch.no_grad():  # Disable gradient computation
-            preference_scores = self(input_ids, encoder_hidden_states)
-        return preference_scores
+        sequence_representation = lstm_output.mean(dim=1)
+        logits = self.regression(sequence_representation)
+        return logits
 
 
 class PreferenceDataset(Dataset):
@@ -106,7 +88,7 @@ class PreferenceDataset(Dataset):
         }
 
 
-def train(model, dataloader, optimizer, criterion, device):
+def train(model, dataloader, optimizer, criterion, scheduler, device):
     model.train()
     running_loss = 0.0
     total_batches = len(dataloader)
@@ -122,7 +104,12 @@ def train(model, dataloader, optimizer, criterion, device):
         outputs = model(input_ids, encoder_hidden_states)
         loss = criterion(outputs, scores)
         loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
         optimizer.step()
+        # Update learning rate
+        scheduler.step()
 
         running_loss += loss.item() * input_ids.size(0)
 
@@ -203,12 +190,12 @@ def prepare_dataset(df, test_size):
     train_prompts = train_df['prompt'].astype(str).tolist()
     train_levels = train_df['level_file_path'].astype(str).tolist()
     train_levels_token = convert_to_level_token(train_levels)
-    train_scores = train_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']].to_numpy()
+    train_scores = train_df[['preference_score']].to_numpy()
 
     val_prompts = test_df['prompt'].astype(str).tolist()
     val_levels = test_df['level_file_path'].astype(str).tolist()
     val_levels_token = convert_to_level_token(val_levels)
-    val_scores = test_df[['normalized_entropy', 'normalized_playability', 'normalized_aesthetic']].to_numpy()
+    val_scores = test_df[['preference_score']].to_numpy()
 
     mario_lm = MarioLM()
     prompt_cache = {}
@@ -236,14 +223,38 @@ def run_preference_trainer(data_set: str, checkpoint_dir: str, learning_rate: fl
     model = PreferenceModel()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
+
+    # Set different learning rates for transformer and newly added layers
+    param_optimizer = list(model.named_parameters())
+
+    # Separate parameters for language model and LSTM/Regression layers
+    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+    optimizer_grouped_parameters = [
+        {'params': [p for n, p in param_optimizer if 'mariolm' in n and not any(nd in n for nd in no_decay)],
+         'lr': 5e-5, 'weight_decay': 0.01},
+        {'params': [p for n, p in param_optimizer if 'mariolm' in n and any(nd in n for nd in no_decay)],
+         'lr': 5e-5, 'weight_decay': 0.0},
+        {'params': [p for n, p in param_optimizer if 'lstm' in n],
+         'lr': 1e-4, 'weight_decay': 0.01},
+        {'params': [p for n, p in param_optimizer if 'regression' in n],
+         'lr': 1e-4, 'weight_decay': 0.01}
+    ]
+
     df = pd.read_csv(data_set, sep=",")
     train_dataset, val_dataset = prepare_dataset(df, test_size=0.25)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
     # Define optimizer and loss function
     # optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    optimizer = torch.optim.AdamW(model.regression.parameters(), lr = learning_rate)
+    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=learning_rate)
     criterion = nn.MSELoss()
+
+    num_training_steps = len(train_dataloader) * epochs
+    num_warmup_steps = int(num_training_steps * 0.1)  # Warmup for 10% of training
+    scheduler = get_linear_schedule_with_warmup(optimizer,
+                                                num_warmup_steps=num_warmup_steps,
+                                                num_training_steps=num_training_steps)
+
     # Log the start of training
     start_time = datetime.now()
     LOGGER.info(f"Training started at {start_time}")
@@ -254,7 +265,7 @@ def run_preference_trainer(data_set: str, checkpoint_dir: str, learning_rate: fl
     for epoch in range(start_epoch, epochs):
         curr_epoch = epoch + 1
         LOGGER.info(f"Epoch {curr_epoch}/{epochs}")
-        train_loss = train(model, train_dataloader, optimizer, criterion, device)
+        train_loss = train(model, train_dataloader, optimizer, criterion, scheduler, device)
         val_loss, val_mse, val_mae, r2score = validate(model, val_dataloader, criterion, device)
 
         LOGGER.info(f"Training Loss: {train_loss:.4f}")
@@ -282,59 +293,14 @@ def run_preference_trainer(data_set: str, checkpoint_dir: str, learning_rate: fl
     LOGGER.info(f"Total training time: {end_time - start_time}")
 
 
-def find_lr(dataset_path, batch_size, beta=0.98):
-    df = pd.read_csv(dataset_path, sep=",")
-    train_dataset, val_dataset = prepare_dataset(df, test_size=0.25)
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-
-    # Define learning rate increments
-    increments = [
-        0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1
-    ]
-    results = []
-    losses = []
-    log_lrs = []
-
-    for lr in increments:
-        model = PreferenceModel()
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model.to(device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-        criterion = nn.MSELoss()
-        optimizer.param_groups[0]['lr'] = lr
-
-        loss = train(model, train_dataloader, optimizer, criterion, device)
-
-        log_lrs.append(lr)  # Use the initial learning rate for the log scale
-        losses.append(loss)
-
-    # Save the plot
-    plt.plot(log_lrs, losses)
-    plt.xlabel('Learning Rate (log scale)')
-    plt.ylabel('Average Loss')
-    plt.title(f'Learning Rate Finder')
-    plt.savefig('../logs/lr_plot.png')
-    plt.close()
-    LOGGER.info(f"Plot saved at ../logs/lr_plot.png")
-
-    results.extend(zip(log_lrs, losses))
-    # Save results to CSV
-    df_results = pd.DataFrame(results, columns=['Log Learning Rate', 'Average Loss'])
-    csv_path = '../logs/lr_results.csv'
-    df_results.to_csv(csv_path, index=False)
-    LOGGER.info(f"Results saved to {csv_path}")
-
-    return results
-
-
 if __name__ == "__main__":
-    LOG_FILE_PATH = '../logs/pmv2_training_log.log'
+    LOG_FILE_PATH = '../logs/pmv5_training_log.log'
     # Configure logging
     logging.basicConfig(filename=LOG_FILE_PATH, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     LOGGER = logging.getLogger('PreferenceModel')
 
     DATASET_PATH = "../sampling/sampling_score.csv"
-    CHECKPOINT_DIR = "../checkpoints/pm_v2/"
+    CHECKPOINT_DIR = "../checkpoints/pm_v5/"
     # Hyperparameters
     BATCH_SIZE = 4
     # LEARNING_RATE = 1e-5

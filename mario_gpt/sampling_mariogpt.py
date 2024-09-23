@@ -17,43 +17,34 @@ def generate_sampling_levels(prompts: [str], num_levels: int, mini_batch_size: i
 
     # Instantiate the MarioGPT model
     mario_lm = MarioLM()
+    # mario_lm.lm = load_model(mario_lm, '')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     mario_lm = mario_lm.to(device)
-
     for _ in range(num_levels):
-        # Generate levels for the entire batch of prompts
-        batch_outputs = mario_lm.sample(
-            prompts=prompts,
-            num_steps=num_steps,
-            temperature=temperature,
-            use_tqdm=True
-        )
+        for start_idx in range(0, len(prompts), mini_batch_size):
+            # Create a mini-batch of prompts
+            mini_batch_prompts = prompts[start_idx:start_idx + mini_batch_size]
 
-        for _ in range(num_levels):
-            for start_idx in range(0, len(prompts), mini_batch_size):
-                # Create a mini-batch of prompts
-                mini_batch_prompts = prompts[start_idx:start_idx + mini_batch_size]
+            # Generate levels for the mini-batch of prompts
+            batch_outputs = mario_lm.sample(
+                prompts=mini_batch_prompts,
+                num_steps=num_steps,
+                temperature=temperature,
+                use_tqdm=True
+            )
 
-                # Generate levels for the mini-batch of prompts
-                batch_outputs = mario_lm.sample(
-                    prompts=mini_batch_prompts,
-                    num_steps=num_steps,
-                    temperature=temperature,
-                    use_tqdm=True
-                )
+            for i, sample_output in enumerate(batch_outputs):
+                current_time_millis = int(time.time() * 1000)
+                prompt = mini_batch_prompts[i]
+                output_file = f"{output_dir}/generated_level/generated_level_{current_time_millis}_{start_idx + i}.txt "
+                sample_output.save(output_file)
 
-                for i, sample_output in enumerate(batch_outputs):
-                    current_time_millis = int(time.time() * 1000)
-                    prompt = mini_batch_prompts[i]
-                    output_file = f"{output_dir}/generated_level/generated_level_{current_time_millis}_{start_idx + i}.txt "
-                    sample_output.save(output_file)
-
-                    sampling_data = f'{output_dir}/sampling_1.csv'
-                    # Open the file in append mode and create a writer object
-                    with open(sampling_data, mode='a', newline='') as level_file:
-                        writer = csv.writer(level_file)
-                        # Write the row of data
-                        writer.writerow([prompt, num_steps, temperature, current_time_millis, output_file])
+                sampling_data = f'{output_dir}/sampling_1.csv'
+                # Open the file in append mode and create a writer object
+                with open(sampling_data, mode='a', newline='') as level_file:
+                    writer = csv.writer(level_file)
+                    # Write the row of data
+                    writer.writerow([prompt, num_steps, temperature, current_time_millis, output_file])
 
 
 if __name__ == "__main__":

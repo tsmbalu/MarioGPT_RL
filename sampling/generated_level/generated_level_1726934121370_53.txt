@@ -1,0 +1,14 @@
+-----Qo-------xxx-----------------------------------------------------------------------------------
+xxxxxxxxxxxxxxx--x----------------------------------------------------------------------------------
+XXXXXXXXXXXXXXX---x------------SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS---------------------------------
+XXXXXXXXXXXXXXX----x-------------[]----[]-----------------------------------------------------------
+XXXXXXXXXXXXXXX-----x------------[]----[]-------E-----------------xxx-------------------------------
+XXXXXXXXXXXXXXX------x-----------[]----[]---QQQQQQ---------xxxxxxxx--x------------------------------
+XXXXXXXXXXXXXXX-------x----------<>----[]-----------------xxSSSSSSS---xxx---------------ES----------
+XXXXXXXXXXXXXXX--------x---------------[]----------------xx-SSSSSSS---XX-x--------------------------
+XXXXXXXXXXXXXXX---------x--------------[]--xxxxxxxxxxxxxxx--SSSSSS----XX--x-------------------------
+XXXXXXXXXXXXXXX----------x-------------[]-xxSSSSSSSSSSSSSS--SSSSSS----XX---x---------------?QS----E-
+XXXXXXXXXXXXXXX-----------x------------<>xx-SSSSSSSSSSSSSS--------S---XX----x-----xxx------------<>-
+XXXXXXXXXXXXXXX------------x----xxx-----xx--SSSSSSSSSSSSSS--------S---XX-----x---xxB-x--------------
+XXXXXXXXXXXXXXX-----------X-xxxxx--xxxxxx---SSSSSSSSSSSSSS------------XX------xxxx-b--xxxxxxxxxxxxxx
+XXXXXXXXXXXXXXX--XXXXXXXXXXXXXXXX--XXXXXXE--XXXXXXXXXXXXXXXXXXXXXXX---XX------XXXXXXXXXXXXXXXXXXXXXX

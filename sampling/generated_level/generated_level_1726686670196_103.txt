@@ -1,0 +1,14 @@
+----------------------------------------------------------------------xxx---------------------------
+-------X------x-x-------------------------xxx-------xxxxxxxxxxxxxxxxxxx--x--------------------------
+SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS--------xxSS------xxXXXXXXXXXXXXXXXXXX---x------SSSSSSSSSSSSSSSSSSS
+SSSS--[]S-----]----------------------x--xx---x----xx-XXXXXXXXXXXXXXXXXX----x-----------[]----SSSSSSS
+SSSS--[]S--xxx]--------------------XXX-xx-----x--xx--XXXXXXXXXXXXXXXXXX-----x----------[]----SSSSSSS
+SSSS--[]S-xx-->x------------------xxxx-xSSS----xxxS--XXXXXXXXXXXXXXXXXX------x---------------SSSSSSS
+------[]-xx-----x-----xx---------xx---xx--------xx---XXXXXXXXXXXXXXXXXX-------x----------x----------
+E--xxx[]xx-------x---xx-x-------xx-----xS-----XXX----XXXXXXXXXXXXXXXXXX--------x---------x----------
+xxxx--xxx---------x-xx---x-xxxxxx------S-S-----------XXXXXXXXXXXXXXXXXX---------x-------x--xxxxxxxxx
+SSSS--QQS-------E--xx-----xxSSSSS---------S----------XXXXXXXXXXXXXXXXXX----------x--------xx-SSSSSSS
+SSSS-----------<>--<>-----S>SSSSS----------------SSS-XXXXXXXXXXXXXXXXXX-----------x------xx--SSSSSSS
+SSSS-----------[]--[]-----S]SSSSS----------------SSS-XXXXXXXXXXXXXXXXXX------------x----xx---SSSSSSS
+SSSS-----------[]--[]------]---------------------SSS-XXXXXXXXXXXXXXXXXX-----------X-xxxxx----SSSSSSS
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX------XXXXXXXXXXSSSXXXXXXXXXXXXXXXXXXX--XXXXXXXXXXXXXXXX----XXXXXXX

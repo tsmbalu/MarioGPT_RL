@@ -1,3 +1,8 @@
+"""
+Author: Balasubramani Murugan
+
+This script is to train reward model. This reward model is
+"""
 import torch
 import torch.nn as nn
 import numpy as np

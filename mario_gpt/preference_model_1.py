@@ -1,3 +1,9 @@
+"""
+Author: Balasubramani Murugan
+
+This script is to train reward model. This reward model is slightly complex neural network which has some dense,
+dropout layers with regularizers.
+"""
 import math
 import tensorflow as tf
 import keras

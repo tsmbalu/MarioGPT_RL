@@ -1,3 +1,8 @@
+"""
+Author: Balasubramani Murugan
+
+This script is to train reward model. This reward model is simple neural network which has couple of dense layer.
+"""
 import tensorflow as tf
 import keras
 from transformers import TFAutoModelWithLMHead, AutoTokenizer, AutoModelWithLMHead, TFAutoModelForCausalLM

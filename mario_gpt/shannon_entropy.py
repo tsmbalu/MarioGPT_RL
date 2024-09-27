@@ -130,7 +130,7 @@ def compute_novelty_score(input_csv_path, output_csv_path):
             generated_level = SampleOutput.load(row[4])
             level_txt = "\n".join(generated_level.level)
             # Filter the most common block tiles i.e. X and S while calculating the novelty
-            tiles_to_consider = '?SQ[]EB'
+            tiles_to_consider = '?SQ[]E'
             novelty_score = rate_novelty_of_level(level_txt, tiles_to_consider)
             normalize_novelty_score = normalize_score(novelty_score)
             row.append(str(novelty_score))

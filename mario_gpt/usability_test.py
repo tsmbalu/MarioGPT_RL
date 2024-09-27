@@ -59,7 +59,7 @@ def show_level_images(img1, img2, border_size=5, border_color=(0, 0, 0)):
     # Bring window to the foreground
     root.lift()
     root.attributes("-topmost", True)
-    root.focus_force()1
+    root.focus_force()
 
     # Convert the combined image to ImageTk format for Tkinter
     combined_image_tk = ImageTk.PhotoImage(combined_image)

@@ -1,3 +1,9 @@
+"""
+Author: Balasubramani Murugan
+
+This script evaluates the novelty of Mario game levels based on text representation
+and calculates scores, including normalization of those scores. The results are saved to a new CSV file.
+"""
 from mario_gpt import SampleOutput
 
 from collections import Counter
@@ -13,8 +19,8 @@ def calculate_shannon_entropy(filtered_level_text):
     """
     Calculate the Shannon entropy of the entire level, giving variability of overall level
 
-    @param level_text:
-    @return:
+    @param level_text: Text representation of the level
+    @return: entropy of the entire level
     """
     # Remove newlines and count tile occurrences
     tile_counts = Counter(filtered_level_text.replace('\n', ''))
@@ -29,6 +35,13 @@ def calculate_shannon_entropy(filtered_level_text):
 
 
 def segment_entropy(filtered_level_text, segment_size=10):
+    """
+    Calculate the entropy of the small segment
+
+    @param filtered_level_text: Text representation of the level
+    @param segment_size: Maximum of tiles in a segment
+    @return: entropy of the segment
+    """
     # Split the level into lines
     level_lines = filtered_level_text.split('\n')
     num_lines = len(level_lines)
@@ -53,6 +66,13 @@ def segment_entropy(filtered_level_text, segment_size=10):
 
 
 def rate_novelty_of_level(level_text, tiles_to_consider):
+    """
+    Score the novelty of the level design.
+
+    @param level_text: Textual representation of the level
+    @param tiles_to_consider: Tiles to be considered
+    @return: novelty score of the level
+    """
     # Filter the level text to include only the specified tiles
     filtered_level_text = filter_tiles(level_text, tiles_to_consider)
 
@@ -82,11 +102,8 @@ def normalize_score(score):
     """
     Normalizes the score based on the given conditions.
 
-    Parameters:
-    score (float): The score to be normalized.
-
-    Returns:
-    float: The normalized score.
+    @param score:  The score to be normalized.
+    @return The normalized score.
     """
     if score > 3:
         return 1.0
@@ -96,8 +113,14 @@ def normalize_score(score):
         return 0
 
 
-if __name__ == "__main__":
-    input_csv_path = '../sampling/sampling_1.csv'
+def compute_novelty_score(input_csv_path, output_csv_path):
+    """
+    Computes the novelty score for each level in the CSV file, normalizes the score,
+    and writes the updated data to a new CSV file.
+
+    @param: input_csv_path (str): The path to the input CSV file containing level data.
+    @param: output_csv_path (str): The path to the output CSV file to store the updated data.
+    """
     with open(input_csv_path, mode='r', newline='') as file:
         reader = csv.reader(file)
         rows = list(reader)
@@ -106,14 +129,20 @@ if __name__ == "__main__":
         for i, row in enumerate(rows):
             generated_level = SampleOutput.load(row[4])
             level_txt = "\n".join(generated_level.level)
-            tiles_to_consider = '?SQ[]E'
+            # Filter the most common block tiles i.e. X and S while calculating the novelty
+            tiles_to_consider = '?SQ[]EB'
             novelty_score = rate_novelty_of_level(level_txt, tiles_to_consider)
             normalize_novelty_score = normalize_score(novelty_score)
             row.append(str(novelty_score))
             row.append(normalize_novelty_score)
 
-    output_csv_path = '../sampling/sampling_1_score.csv'
     # Write the updated content back to a new CSV file
     with open(output_csv_path, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerows(rows)
+
+
+if __name__ == "__main__":
+    input_csv_path = '../sampling/sampling_1.csv'
+    output_csv_path = '../sampling/sampling_1_score.csv'
+    compute_novelty_score(input_csv_path, output_csv_path)

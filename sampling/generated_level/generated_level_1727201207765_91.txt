@@ -1,0 +1,14 @@
+--------------------------------------------------
+--------------------------------------------------
+----SSS--[]SSSSSSSSSSSSSSSSSSSSS------------------
+---------[]SSSSSSSSSSSSSSSSSSSSS------------------
+---------[]SSSSSSSSSSSSSSSSSSSSS------------------
+---------[]SSSSSSSSSSSSSSSSSSSSS-----------------X
+---------[]SSSSSSSSSSSSSSSSSSSSS----------------XX
+---------[]SSSSSSSSSSSSSSSSSSSSS---------------XXX
+--xx------]SSSSSSSSSSSSSSSSSSSSS--------------XXXX
+-xx-xxxxx-]SSSSSSSSSSSSSSSSSSSSS--------E----XXXXX
+xx--SSSSSSSSSSSSSSSSSSSSSSSSSSSS---E---<>---XXXXXX
+x---SSSSSSSSSSSSSSSSSSSSSSSSSSSS--<>---[]--XXXXXXX
+o---SSSSSSSSSSSSSSSSSSSSSSSSSSSS--[]---[]-XXXXXXXX
+X---XXXXXXXXXXXXXXXXXXXXXXXXXXXX--XX---XXXXXXXXXXX

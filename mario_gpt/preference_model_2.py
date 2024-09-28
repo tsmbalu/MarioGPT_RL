@@ -1,7 +1,8 @@
 """
 Author: Balasubramani Murugan
 
-This script is to train reward model. This reward model is
+This script is to train reward model. This reward model uses the MarioGPT and takes the last hidden layers and
+pass through a few linear layers to predict all three scores for the level.
 """
 import torch
 import torch.nn as nn
@@ -94,6 +95,9 @@ class PreferenceModel(nn.Module):
 
 
 class PreferenceDataset(Dataset):
+    """
+    Dataset class to handle inputs (level tokens, prompts) and corresponding scores for training and validation.
+    """
     def __init__(self, input_ids: torch.LongTensor, encoder_hidden_states: torch.FloatTensor,
                  scores: torch.FloatTensor):
         self.input_ids = input_ids

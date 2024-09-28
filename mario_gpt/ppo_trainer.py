@@ -22,7 +22,7 @@ global LOGGER
 
 class PPOTrainer:
     def __init__(self, frozen_lm, finetune_lm, preference_model, checkpoint_dir, beta=0.01, clip_ratio=0.2,
-                 learning_rate=1e-5):
+                 learning_rate=1e-5, temperature=2.5, num_steps=1400):
         """
 
         @param frozen_lm:
@@ -32,6 +32,8 @@ class PPOTrainer:
         @param beta:
         @param clip_ratio:
         @param learning_rate:
+        @param temperature:
+        @param num_steps:
         """
         self.frozen_mario_lm = frozen_lm
         self.finetune_mario_lm = finetune_lm
@@ -41,9 +43,12 @@ class PPOTrainer:
         self.optimizer = AdamW(self.finetune_mario_lm.lm.parameters(), lr=learning_rate)
         self.checkpoint_dir = checkpoint_dir
         self.value_head = ValueHead(self.finetune_mario_lm.lm.config.hidden_size).to(self.finetune_mario_lm.lm.device)
+        self.temperature = temperature
+        self.num_steps = num_steps
 
     def forward_pass(self, model, prompt_tensor, response_tensor):
         """
+        This function perform the forward pass in the MarioGPT model
 
         @param model:
         @param prompt_tensor:
@@ -87,7 +92,7 @@ class PPOTrainer:
 
     def compute_reward(self, preferability, initial_logits, current_logits):
         """
-
+        This function compute the reward
         @param preferability:
         @param initial_logits:
         @param current_logits:
@@ -101,6 +106,7 @@ class PPOTrainer:
 
     def get_advantages(self, rewards, values, gamma=0.99, lam=0.95):
         """
+        This function compute the advantage
 
         @param rewards:
         @param values:
@@ -122,12 +128,13 @@ class PPOTrainer:
 
     def ppo_loss(self, old_logprobs, current_logprobs, rewards, advantages, values):
         """
+        This function perform the loss calculation for the ppo training
 
-        @param old_logprobs:
-        @param current_logprobs:
-        @param rewards:
-        @param advantages:
-        @param values:
+        @param old_logprobs: frozen MarioGPT model logprobs
+        @param current_logprobs: fine-tuning MarioGPT model logprobs
+        @param rewards: rewards of the level
+        @param advantages: advantage
+        @param values: state values
         @return:
         """
         # Compute the probability ratio
@@ -150,17 +157,20 @@ class PPOTrainer:
 
     def train_step(self, prompts):
         """
+        This function perform the generating the level from the fine-tuning model and get the reward sigal from the
+        reward model which is used to calculate the preferability of the level. Using the PPO the final two layers of
+        the MarioGPT model is altered.
 
-        @param prompts:
-        @return:
+        @param prompts: list of prompts
+        @return: loss and reward
         """
         total_reward = 0
         LOGGER.info(f"Starting train step with {len(prompts)} prompts.")
         # Generate level with the current policy
         response, response_tensor, _, _ = self.finetune_mario_lm.sample(
             prompts=prompts,
-            num_steps=1400,
-            temperature=2.5,
+            num_steps=self.num_steps,
+            temperature=self.temperature,
             use_tqdm=True,
             return_tensor=True,
             return_logits=True,
@@ -245,14 +255,14 @@ class PPOTrainer:
 
     def train(self, prompts, num_epochs=10, batch_size=4, save_freq=5):
         """
-        This method performs multiple training epochs over a set of prompts, optimizing the model
+        This function performs multiple training epochs over a set of prompts, optimizing the model
         based on rewards and loss values. The training process is checkpointed at regular intervals
         based on the `save_freq` parameter, ensuring progress can be saved and resumed.
 
         @param prompts: List of prompts
         @param num_epochs: Number of epochs
-        @param batch_size: Batch Size
-        @param save_freq: Frequence interval in which the model as to be saved
+        @param batch_size: Number of samples processed in each batch.
+        @param save_freq: Frequency at which the model is saved (every n epochs).
         @return:
         """
         start_epoch, reward = load_checkpoint(self.checkpoint_dir, self.finetune_mario_lm.lm, self.optimizer)

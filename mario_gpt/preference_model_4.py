@@ -1,7 +1,9 @@
 """
 Author: Balasubramani Murugan
 
-This script is to train reward model. This reward model is
+This script is to train reward model. This reward model uses the MarioGPT and takes the last hidden layers and
+pass through a few LSTM layers to predict all three scores for the level. The training process incorporates
+an optimizer with a learning rate scheduler.
 """
 import torch
 import torch.nn as nn
@@ -47,6 +49,14 @@ class PreferenceModel(nn.Module):
         )
 
     def forward(self, input_ids, encoder_hidden_states):
+        """
+         Forward pass for the PreferenceModel. Splits input sequences into chunks, processes each chunk through
+        the MarioGPT model and LSTM layers, and outputs predicted scores.
+
+        @param input_ids:
+        @param encoder_hidden_states:
+        @return:
+        """
         seq_len = input_ids.shape[-1]
         chunk_size = self.chunk_size
         num_chunks = seq_len // chunk_size
@@ -95,6 +105,9 @@ class PreferenceModel(nn.Module):
 
 
 class PreferenceDataset(Dataset):
+    """
+    Dataset class to handle inputs (level tokens, prompts) and corresponding scores for training and validation.
+    """
     def __init__(self, input_ids: torch.LongTensor, encoder_hidden_states: torch.FloatTensor,
                  scores: torch.FloatTensor):
         self.input_ids = input_ids
@@ -113,6 +126,17 @@ class PreferenceDataset(Dataset):
 
 
 def train(model, dataloader, optimizer, criterion, scheduler, device):
+    """
+    This function is to train the reward model.
+
+    @param model: Model to be trained
+    @param dataloader: Dataloader for the training data
+    @param optimizer: Optimizer to be used
+    @param criterion: Loss function criteria
+    @param scheduler:
+    @param device: Device GPU or CPU
+    @return: loss
+    """
     model.train()
     running_loss = 0.0
     total_batches = len(dataloader)
@@ -142,6 +166,15 @@ def train(model, dataloader, optimizer, criterion, scheduler, device):
 
 
 def validate(model, dataloader, criterion, device):
+    """
+    This function is to evaluate the model on the validation dataset.
+
+    @param model: Model to be trained
+    @param dataloader: Dataloader for the validation
+    @param criterion: Loss function criteria
+    @param device: Device GPU or CPU
+    @return The average validation loss, mean squared error (MSE), mean absolute error (MAE), and R2 score.
+    """
     model.eval()
     running_loss = 0.0
     all_preds = []
@@ -172,6 +205,11 @@ def validate(model, dataloader, criterion, device):
 
 
 def convert_to_level_token(levels: list):
+    """
+    This function is to convert the level file to string i.e. textual representation
+    @param levels: List of path of level file
+    @return: List of all levels
+    """
     level_list = []
     for lvl in levels:
         generated_level = SampleOutput.load(lvl)
@@ -196,6 +234,13 @@ def convert_to_level_token(levels: list):
 
 
 def tokenize_prompt(mario_lm, prompts: list, cache: dict) -> (list, dict):
+    """
+    This function is to tokenize the prompt
+    @param mario_lm: MarioGPT Language model
+    @param prompts: List of prompts
+    @param cache: Cache for memorisation
+    @return:
+    """
     tokenized_prompts = []
     for prompt in prompts:
         if prompt not in cache:
@@ -207,6 +252,13 @@ def tokenize_prompt(mario_lm, prompts: list, cache: dict) -> (list, dict):
 
 
 def prepare_dataset(df, test_size):
+    """
+    This function is to prepare the dataset
+
+    @param df: dataframe containing the data
+    @param test_size: Size of the test data
+    @return: training and validation dataset
+    """
     # Split the dataset
     train_df, test_df = train_test_split(df, test_size=test_size, random_state=42, stratify=df[['prompt']])
     LOGGER.info(f'Train Shape: {train_df.shape}')
@@ -242,6 +294,17 @@ def prepare_dataset(df, test_size):
 
 def run_preference_trainer(data_set: str, checkpoint_dir: str, learning_rate: float, batch_size: int, epochs: int,
                            early_stop_patience: int, min_epochs: int):
+    """
+    This function is to train the reward model to predict the playability, novelty and aesthetic score for a level.
+
+    @param data_set: Path of CSV dataset file
+    @param checkpoint_dir: Path of checkpoint directory where the model need to stored
+    @param learning_rate: Learning Rate for the model
+    @param batch_size: Number of samples processed in each batch
+    @param epochs: Number of epochs
+    @param early_stop_patience: Number of epochs after which the training need to be stop there is not improvement
+    @param min_epochs: Minimum number of epochs that training to be performed
+    """
     global device
     # Initialize model
     model = PreferenceModel()

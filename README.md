@@ -47,12 +47,6 @@ Requirements
 ------------
 - Python 3.12
 
-Python Library
-- Pytorch
-- Transformer
-- Numpy
-- Pandas
-
 Citation
 --------
 @misc{https://github.com/tsmbalu/MarioGPT_RL,

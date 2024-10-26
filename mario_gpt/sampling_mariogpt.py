@@ -1,3 +1,8 @@
+"""
+Author: Balasubramani Murugan
+
+This script is for perform sampling i.e. generate levels
+"""
 import torch
 import time
 import csv

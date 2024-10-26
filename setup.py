@@ -7,6 +7,11 @@ from setuptools import find_packages
 from setuptools import setup
 
 
+def parse_requirements(filename):
+    """ Load requirements from a pip requirements file """
+    with open(filename, 'r') as f:
+        return f.read().splitlines()
+
 this_directory = path.abspath(path.dirname(__file__))
 with open(path.join(this_directory, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
@@ -30,13 +35,7 @@ setup(
 
     packages=find_packages(exclude=('tests',)),
 
-    install_requires=[
-        'torch',
-        'transformers',
-        'scipy',
-        'tqdm',
-        'pillow',
-    ],
+    install_requires=parse_requirements('requirements.txt'),
 
     classifiers=[
         'Development Status :: 2 - Pre-Alpha',

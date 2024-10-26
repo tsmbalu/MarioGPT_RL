@@ -20,7 +20,7 @@ from mario_gpt.utils import (
     view_level,
 )
 
-from mario_gpt.value_head import ValueHead
+from value_head import ValueHead
 
 
 @dataclass

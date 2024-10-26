@@ -1,3 +1,8 @@
+"""
+Author: Balasubramani Murugan
+
+This script is to fine tune the MarioGPT model using the PPO.
+"""
 import torch
 from torch.optim import AdamW
 import torch.nn.functional as F
@@ -5,10 +10,10 @@ import logging
 
 from tqdm import tqdm
 from mario_gpt import MarioLM, SampleOutput
-from mario_gpt import ValueHead
+from value_head import ValueHead
 from preference_model import PreferenceModel
 from checkpoint_manager import load_model, save_checkpoint, load_checkpoint
-from playability_measure import measure_playability, get_a_star_response, normalize_playability_score
+from playability_measure import measure_playability, run_astar_agent_simulator, normalize_playability_score
 from shannon_entropy import rate_novelty_of_level, normalize_score as vnormalize_score
 from aesthetic_evaluator import evaluate_aesthetic, normalize_score as anormalize_score
 
@@ -17,7 +22,19 @@ global LOGGER
 
 class PPOTrainer:
     def __init__(self, frozen_lm, finetune_lm, preference_model, checkpoint_dir, beta=0.01, clip_ratio=0.2,
-                 learning_rate=1e-5):
+                 learning_rate=1e-5, temperature=2.5, num_steps=1400):
+        """
+
+        @param frozen_lm:
+        @param finetune_lm:
+        @param preference_model:
+        @param checkpoint_dir:
+        @param beta:
+        @param clip_ratio:
+        @param learning_rate:
+        @param temperature:
+        @param num_steps:
+        """
         self.frozen_mario_lm = frozen_lm
         self.finetune_mario_lm = finetune_lm
         self.preference_model = preference_model
@@ -26,8 +43,18 @@ class PPOTrainer:
         self.optimizer = AdamW(self.finetune_mario_lm.lm.parameters(), lr=learning_rate)
         self.checkpoint_dir = checkpoint_dir
         self.value_head = ValueHead(self.finetune_mario_lm.lm.config.hidden_size).to(self.finetune_mario_lm.lm.device)
+        self.temperature = temperature
+        self.num_steps = num_steps
 
     def forward_pass(self, model, prompt_tensor, response_tensor):
+        """
+        This function perform the forward pass in the MarioGPT model
+
+        @param model:
+        @param prompt_tensor:
+        @param response_tensor:
+        @return:
+        """
         with torch.no_grad():
             context_len = 672
             step_size = 14
@@ -64,6 +91,13 @@ class PPOTrainer:
         return logits, values
 
     def compute_reward(self, preferability, initial_logits, current_logits):
+        """
+        This function compute the reward
+        @param preferability:
+        @param initial_logits:
+        @param current_logits:
+        @return:
+        """
         current_probs = F.softmax(current_logits, dim=-1)
         initial_probs = F.softmax(initial_logits, dim=-1)
         kl_div = compute_kl_divergence(current_probs, initial_probs)
@@ -71,6 +105,15 @@ class PPOTrainer:
         return reward
 
     def get_advantages(self, rewards, values, gamma=0.99, lam=0.95):
+        """
+        This function compute the advantage
+
+        @param rewards:
+        @param values:
+        @param gamma:
+        @param lam:
+        @return:
+        """
         gae = 0
         advantages_reversed = []
         gen_len = values.shape[-1]
@@ -84,6 +127,16 @@ class PPOTrainer:
         return advantages
 
     def ppo_loss(self, old_logprobs, current_logprobs, rewards, advantages, values):
+        """
+        This function perform the loss calculation for the ppo training
+
+        @param old_logprobs: frozen MarioGPT model logprobs
+        @param current_logprobs: fine-tuning MarioGPT model logprobs
+        @param rewards: rewards of the level
+        @param advantages: advantage
+        @param values: state values
+        @return:
+        """
         # Compute the probability ratio
         prob_ratio = torch.exp(current_logprobs - old_logprobs)  # shape (batch_size, sequence_length)
 
@@ -103,13 +156,21 @@ class PPOTrainer:
         return actor_loss + critic_loss
 
     def train_step(self, prompts):
+        """
+        This function perform the generating the level from the fine-tuning model and get the reward sigal from the
+        reward model which is used to calculate the preferability of the level. Using the PPO the final two layers of
+        the MarioGPT model is altered.
+
+        @param prompts: list of prompts
+        @return: loss and reward
+        """
         total_reward = 0
         LOGGER.info(f"Starting train step with {len(prompts)} prompts.")
         # Generate level with the current policy
         response, response_tensor, _, _ = self.finetune_mario_lm.sample(
             prompts=prompts,
-            num_steps=1400,
-            temperature=2.5,
+            num_steps=self.num_steps,
+            temperature=self.temperature,
             use_tqdm=True,
             return_tensor=True,
             return_logits=True,
@@ -157,7 +218,7 @@ class PPOTrainer:
                 preference_scores = pref_score
             else:
                 preference_scores = torch.cat((preference_scores, pref_score), dim=0)
-        '''
+            '''
 
         # Combine all logits and values into batch tensors
         frozen_logits = torch.cat(all_frozen_logits, dim=0)
@@ -193,6 +254,17 @@ class PPOTrainer:
         return loss.item(), total_reward
 
     def train(self, prompts, num_epochs=10, batch_size=4, save_freq=5):
+        """
+        This function performs multiple training epochs over a set of prompts, optimizing the model
+        based on rewards and loss values. The training process is checkpointed at regular intervals
+        based on the `save_freq` parameter, ensuring progress can be saved and resumed.
+
+        @param prompts: List of prompts
+        @param num_epochs: Number of epochs
+        @param batch_size: Number of samples processed in each batch.
+        @param save_freq: Frequency at which the model is saved (every n epochs).
+        @return:
+        """
         start_epoch, reward = load_checkpoint(self.checkpoint_dir, self.finetune_mario_lm.lm, self.optimizer)
         LOGGER.info("Starting training.....")
         self.finetune_mario_lm.train()
@@ -221,6 +293,13 @@ class PPOTrainer:
 
 
 def compute_kl_divergence(current_probs, initial_probs):
+    """
+    Compute KL Divergence
+
+    @param current_probs: Finetuning MarioGPT model probs
+    @param initial_probs: Existing MarioGPT model probs
+    @return:
+    """
     p = torch.clamp(current_probs, min=1e-10, max=1.0)
     q = torch.clamp(initial_probs, min=1e-10, max=1.0)
     kl_div = torch.sum(p * torch.log(p / q), dim=-1)
@@ -228,6 +307,14 @@ def compute_kl_divergence(current_probs, initial_probs):
 
 
 def logprobs_from_logits(logits: torch.Tensor, labels: torch.Tensor, gather: bool = True) -> torch.Tensor:
+    """
+    This function is to calculate the log probabilities from the logits
+
+    @param logits:
+    @param labels:
+    @param gather:
+    @return:
+    """
     logp = F.log_softmax(logits, dim=2)
 
     if not gather:
@@ -237,6 +324,15 @@ def logprobs_from_logits(logits: torch.Tensor, labels: torch.Tensor, gather: boo
 
 
 def run_ppo_trainer(preference_model_path, mario_model_checkpoint_dir, training_prompts, num_of_epochs):
+    """
+    This function is the starting point of the ppo training of MarioGPT model
+
+    @param preference_model_path: Path of the reward model checkpoint
+    @param mario_model_checkpoint_dir: Path of the fine-tuned MarioGPT model checkpoint
+    @param training_prompts: List of prompts that will be used for PPO training
+    @param num_of_epochs: Number of epochs
+    @return:
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     initial_mario_lm = MarioLM().to(device)
     finetune_mario_lm = MarioLM().to(device)
